@@ -18,12 +18,18 @@
 > can add no code at all that's the ideal."* He is right, and the answer was
 > to stop making one build carry both arguments. See PLAN.md A-22.
 >
-> Fixes flow one way. This repo keeps `corky` as a remote named `pure` and
-> merges it forward, so a signer fix is never applied twice:
+> Fixes flow one way. This repo keeps `corky` as a remote named `pure`, so a
+> signer fix is never applied twice:
 >
 > ```
 > git fetch pure && git merge pure/main
 > ```
+>
+> **That is safe only from 2026-09-04 onward.** `corky`'s history *contains*
+> the A-22 deletion, so merging it before that point removes codex32, the
+> shim, SeedQR and their suites from here. That merge is already recorded
+> with `-s ours`, taking the ancestry and none of the tree, which is what
+> makes every later merge behave normally. Do not undo it.
 
 # Corky
 
