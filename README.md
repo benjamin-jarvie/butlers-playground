@@ -1,3 +1,30 @@
+> ## This is the playground, not the signer
+>
+> **The product is [`corky`](https://github.com/benjamin-jarvie/corky).** That
+> repo has **zero lines that transform secret material**: no BIP39, no
+> codex32, no SeedQR. Bitcoin Core generates, holds and signs with your key,
+> and nothing of ours computes on it. That is the claim, and it is checkable
+> in one sitting.
+>
+> **This repo is that signer plus everything else.** codex32 backups and
+> k-of-n shares, BIP39 seed words, SeedQR, and silent payments later. It
+> exists for people who read code and want the device to do more than
+> generate and sign. It carries about 830 more lines, 342 of them touching
+> secret material, so it asks more of a reviewer by design.
+>
+> Why the split: JW Weatherman, on being told Corky is a tiny UI over Core —
+> *"your only focus should be in minimizing any additional code you add. As
+> soon as code review is required you are half way to a rug product. If you
+> can add no code at all that's the ideal."* He is right, and the answer was
+> to stop making one build carry both arguments. See PLAN.md A-22.
+>
+> Fixes flow one way. This repo keeps `corky` as a remote named `pure` and
+> merges it forward, so a signer fix is never applied twice:
+>
+> ```
+> git fetch pure && git merge pure/main
+> ```
+
 # Corky
 
 **Core's keys, nothing kept.**
