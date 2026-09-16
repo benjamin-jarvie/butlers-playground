@@ -174,17 +174,52 @@ transit question. Reproducibility answers a provenance question. Most people
 verifying a download believe they have answered the second when they have
 answered the first.
 
-**The same argument, published a year earlier and ignored.** The thread points
-at Mike Schmidt's
-["The Core Issue Beneath the Binary: Verifying Trust"](https://bitcoinmagazine.com/print/the-core-issue-beneath-the-binary-verifying-trust)
-in Bitcoin Magazine, 24 March 2026, which treats the build process itself as
-an attack surface: "Reproducible builds are critical, because no user of our
-software should have to trust that what's contained inside is what we say it
-is. This must always be independently verifiable." Schmidt lists the same
-properties from the maintainers' side: reproducible builds, minimal
-dependencies to shrink the supply-chain surface, and no automatic updates, so
-a new binary reaches you only when you consent to it. The piece does not count
-builders, which is the one number this article supplies below.
+**The same argument, published six months earlier.** The thread points at Mike
+Schmidt's
+["The Core Issue: Beneath The Binary, Verifying Trust"](https://bitcoinmagazine.com/print/the-core-issue-beneath-the-binary-verifying-trust)
+in Bitcoin Magazine, 24 March 2026, which sets out the build system from the
+maintainers' side. Four things in it matter here.
+
+**Its root is older than Bitcoin.** Schmidt traces the whole problem to Ken
+Thompson's 1984 essay *Reflections on Trusting Trust*, which showed that clean
+source code proves nothing if the compiler that built it was compromised.
+Reproducible builds are the answer to that specific attack, and @heavilyarmedc
+is describing the same attack forty years later.
+
+**The line everyone quotes is not Schmidt's.** It belongs to Bitcoin Core
+contributor Michael Ford, who signs as fanquake, and Schmidt quotes him:
+"Reproducible builds are critical, because no user of our software should have
+to trust that what's contained inside is what we say it is. This must always
+be independently verifiable." Schmidt's own framing sits beside it: the build
+process is itself an attack surface to be minimised and defended.
+
+**Attestation is open to the public.** This is the detail that gives the
+number below its weight. Schmidt is explicit that signing is not restricted to
+Core developers, that the process is open to anyone, and that many
+non-code-contributors regularly contribute signatures. So the sixteen are not
+sixteen insiders vouching for each other. In his phrase, the official binaries
+are "the intersection of dozens of independent builders' outputs."
+
+**And the limit, which he states plainly and which this article must carry.**
+Reproducible builds prove that a binary is a genuine representation of its
+source code. They prove nothing about whether that source code is any good.
+Schmidt puts the boundary directly: correctness "is left to processes around
+thorough testing and code review." So the toolchain axis answers one question
+completely and another not at all. Sixteen builders agreeing means nobody
+slipped anything in between the source and your download. It does not mean the
+source is free of bugs, and no attestation count will ever mean that.
+
+Two further properties from the piece bear on the dependency test at the end
+of this article. Core has been removing third-party dependencies for a decade,
+OpenSSL and MiniUPnP gone, Boost and Libevent being phased out, with fully
+static binaries as the goal, because every inherited dependency is code you did
+not write and cannot audit. And Core has never shipped automatic updates and
+its developers say it never will, on the reasoning that an auto-update channel
+is a single group able to push code to every node. A new binary reaches you
+only when you choose to fetch and verify it.
+
+Schmidt does not count builders. That is the one number this article supplies
+below.
 
 **The record, checked rather than repeated.** The reproducibility claim is
 testable, which is the point of it, so we tested it. Bitcoin Core 31.1
@@ -677,7 +712,9 @@ settled at the moment of creation or never.
 
 **Toolchain provenance.** Can parties who do not trust each other prove the
 binary matches the source? Sixteen can, for Bitcoin Core 31.1. A checksum
-published by the party that shipped the file answers a smaller question.
+published by the party that shipped the file answers a smaller question. Keep
+the boundary in view: this asks whether the binary matches the source, never
+whether the source is correct.
 
 **Where the secret rests, and what it restores.** Words back up a secret and
 a descriptor backs up a wallet, so a backup holding only one of the two is
