@@ -3,7 +3,7 @@
 *Draft v4, 2026-09-15. For Bitcoin Butlers. The framework of this article,
 one secret weighed across three phases of its life, comes from jimbocoin.
 Every checkable claim carries a link; quotations from jimbocoin, Ben
-Westgate, FractalEncrypt, @heavilyarmedclown and @btcpavao come from public
+Westgate, FractalEncrypt, @heavilyarmedc and @btcpavao come from public
 posts and correspondence, and are reproduced in full rather than summarised
 where they carry an argument against this article's own conclusions.*
 
@@ -135,7 +135,8 @@ shuffle handed to a backdoored library is a perfect shuffle wasted. Two
 practitioners put the missing axis plainly, and both deserve their full
 length rather than a paraphrase.
 
-**The toolchain argument.** [@heavilyarmedclown](https://x.com/heavilyarmedclown):
+**The toolchain argument.**
+[@heavilyarmedc](https://x.com/heavilyarmedc/status/2099879826949620126):
 
 > Very few people in Bitcoin seem to understand that a sophisticated attacker would not hide security flaws in an apps viewable source code.
 >
@@ -159,6 +160,32 @@ length rather than a paraphrase.
 >
 > ...but the only thing it proves is that nobody messed with the app after it got strung together with some spooky crypto library compiled by some anonymous contributor in Ukraine.
 
+He compressed it himself in a follow-up, and the compression is the part worth
+keeping:
+
+> TLDR
+>
+> In most cases, the only thing verifying a SHA256SUMS file for a piece of Bitcoin software tells you is that you are downloading the same thing the maintainer uploaded.
+>
+> But it tells you very little about what they actually uploaded, unless you use Bitcoin Core.
+
+That distinction is the whole section in two sentences. A checksum answers a
+transit question. Reproducibility answers a provenance question. Most people
+verifying a download believe they have answered the second when they have
+answered the first.
+
+**The same argument, published a year earlier and ignored.** The thread points
+at Mike Schmidt's
+["The Core Issue Beneath the Binary: Verifying Trust"](https://bitcoinmagazine.com/print/the-core-issue-beneath-the-binary-verifying-trust)
+in Bitcoin Magazine, 24 March 2026, which treats the build process itself as
+an attack surface: "Reproducible builds are critical, because no user of our
+software should have to trust that what's contained inside is what we say it
+is. This must always be independently verifiable." Schmidt lists the same
+properties from the maintainers' side: reproducible builds, minimal
+dependencies to shrink the supply-chain surface, and no automatic updates, so
+a new binary reaches you only when you consent to it. The piece does not count
+builders, which is the one number this article supplies below.
+
 **The record, checked rather than repeated.** The reproducibility claim is
 testable, which is the point of it, so we tested it. Bitcoin Core 31.1
 carries Guix attestations from sixteen independent builders, each having run
@@ -173,8 +200,8 @@ identical binaries. No signing device in this article can make that claim,
 and most cannot make any claim about their toolchain at all.
 
 **The same record, and a wider conclusion.**
-[@btcpavao](https://x.com/btcpavao) names the same sixteen and pushes past
-the build question into a second one:
+[@btcpavao](https://x.com/btcpavao/status/2099891574779875630) names the same
+sixteen and pushes past the build question into a second one:
 
 > Strongly agree.
 >
@@ -558,7 +585,7 @@ keys on it is the part that carries the online attack surface.
 the lowest total unverifiable trust available at ordinary effort. The
 toolchain axis makes that claim false, and it is worth saying why rather
 than quietly deleting it. A signing device's firmware is the single point
-of trust @heavilyarmedclown describes: one party compiled the code that
+of trust @heavilyarmedc describes: one party compiled the code that
 touches your keys, and no independent builder can prove what shipped. So
 this system lowers entropy trust and leaves toolchain trust at its maximum.
 What it does answer is narrower and still real: card entropy closes the RNG
