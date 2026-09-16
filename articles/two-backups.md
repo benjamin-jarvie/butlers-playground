@@ -534,25 +534,39 @@ because the failure that actually takes coins is one backup, in one place,
 in one format, that quietly stopped being readable, and handwriting
 ambiguity is part of that failure.
 
-## Putting it together: four systems, weighed
+## Putting it together: five systems, and what each one costs
 
-**Bitcoin Core on a desktop, single-sig with encryption.** Right engine,
-wrong vessel. The keys live full-time on an online, general-purpose
-machine, the doc's own keylogger caveat applies, and the passphrase adds a
-loss mode faster than it removes a theft mode. The project's own signals
-point the same way: Core's bridge for pairing with hardware wallets, HWI,
+This section ranks nothing and recommends nothing. Each system below is
+listed with what it answers, what it still trusts, and what it costs to
+run. The axes are the ones this article has established: entropy
+provenance, toolchain provenance, targetedness, loss modes, and effort. A
+holder with ten thousand dollars and a holder with a family inheritance are
+solving different problems, and no single answer serves both.
+
+**Bitcoin Core on an online desktop, single-sig with encryption.** The keys
+live full-time on an online, general-purpose machine. The doc's own
+keylogger caveat applies, and the wallet passphrase adds a loss mode faster
+than it removes a theft mode. Core's bridge for pairing with hardware
+wallets, HWI,
 [entered minimal maintenance in August 2026](https://github.com/bitcoin-core/HWI/issues/850)
 by its maintainer's announcement, pending a third-party successor. To be
-plain about what is and is not being dismissed: run Core, run your own
-node, verify your own chain; just do not make that online machine the
-holder of your keys. Core is the average person's node and watch layer,
-not their key layer.
+plain about the scope of that: running Core, running your own node and
+verifying your own chain are all sound on this machine. Holding spending
+keys on it is the part that carries the online attack surface.
 
-**Hardware wallet plus card-generated seed.** The lowest total
-unverifiable trust available at ordinary effort: card entropy closes the
-RNG hole with only the checksum computed on the offline device, the HWW
-gives screen-verified signing and key isolation, and steel words plus a
-printed descriptor cover both halves of the backup. Its remaining trusts
+**Hardware wallet plus card-generated seed.** An earlier draft called this
+the lowest total unverifiable trust available at ordinary effort. The
+toolchain axis makes that claim false, and it is worth saying why rather
+than quietly deleting it. A signing device's firmware is the single point
+of trust @heavilyarmedclown describes: one party compiled the code that
+touches your keys, and no independent builder can prove what shipped. So
+this system lowers entropy trust and leaves toolchain trust at its maximum.
+What it does answer is narrower and still real: card entropy closes the RNG
+hole with only the checksum computed on the offline device, the keys never
+sit on a general-purpose networked machine, signing is confirmed on a
+second screen the host cannot paint, and steel words plus a printed
+descriptor cover both halves of the backup. Its largest practical advantage
+is effort, and effort decides what people actually complete. Its remaining trusts
 are the vendor's firmware and supply chain, its remaining loss modes are the
 human ones, and its remaining leak is targetedness: the purchase itself
 tells several companies that you probably own Bitcoin. The BIP39 passphrase sits on a knife edge here: it
@@ -561,6 +575,33 @@ often lost forever, so it trades a theft mode for a loss mode; written
 and stored as seriously as the seed itself, with a small decoy balance on
 the no-passphrase wallet, the trade tilts one way, and held only in a
 skull it tilts the other.
+
+**Bitcoin Core on an airgapped, clean machine.** This is the strongest form
+of the Core case and the article's earlier draft never weighed it, which was
+an omission. Radios removed rather than switched off, a freshly installed
+system, PSBTs crossing on removable media, and the watch-only wallet living
+on a separate online machine. Measured on the axes above it is the leading
+system on three of them. Toolchain provenance: sixteen independent builders
+can prove the binaries, and no signing device in this article can match
+that. Targetedness: nothing about the purchase says Bitcoin. Vendor trust:
+there is no firmware author and no supply chain to trust, so the entire
+category of vendor risk disappears.
+
+What it still carries is genuine. A general-purpose operating system is a
+much larger body of code than a signer's firmware, so the airgap is doing
+heavy work, and the airgap is a procedure rather than a physical fact.
+Removable media is the crossing point, and USB is a worse crossing than a
+QR code or an SD card. Address verification happens on the same machine
+that composed the transaction, so a compromised host has one screen to lie
+on rather than two. The seed-to-Core path also needs specifying: Core does
+not read BIP39 words, and importing witnessed entropy as a descriptor
+wallet is possible but the exact procedure is the open work, so treat that
+step as unfinished rather than solved.
+
+And the cost that decides it for most people is not a security property. It
+requires installing Linux and working in a command line. Stating the
+security case plainly does not change how many people will do that, and a
+fraction will.
 
 **Yeti Cold.** Core-only 3-of-7 multisig across cheap laptops and
 geography: survives four lost keys, requires three compromised locations
@@ -593,27 +634,43 @@ it simpler means making the vendors more alike, and their unlikeness is
 the security. For large holdings with a professional or a patient
 operator, it is the ceiling. Sold to an average person as a starting
 point, it mostly manufactures stuck funds. And it carries the highest
-targetedness cost of the four, because every vendor added to the quorum adds
+targetedness cost of the five, because every vendor added to the quorum adds
 a customer database, a shipping record and a support inbox holding your name
 next to the fact that you buy signing hardware.
 
 ## The through-line
 
-One principle survives all three phases: **push trust toward things you
-can physically verify or independently cross-check, and know the name of
-every trust you keep.** Two kinds of verification count, and most custody
-advice argues about only one of them: whether you witnessed the randomness,
-and whether independent parties can prove the binary matches its source. Entropy from your own shuffle. Signing code you
-chose on purpose, on hardware whose radios are absent rather than
-promised off. Words on steel for the secret, a descriptor on paper for
-the map, splitting when privacy of the backup itself matters. None of
-this removes trust; it relocates trust to places where lying is hard.
-And run the dependency test on the result: if any single maker, app, or
-server in your setup disappeared tomorrow, could you still generate,
-sign, update, and recover? Every "no" is a trust you are carrying,
-whether or not you knew its name. Then run the second test, the one
-@btcpavao's post forces: for every trust you keep, count who learned you own
-Bitcoin in order to grant it.
+This article names trades rather than picking one. What survives all three
+phases is a set of questions, and the value is in asking all of them about
+your own setup instead of arguing one of them loudly.
+
+**Entropy provenance.** Did you witness the randomness, or did something
+generate it for you? No generator's output can be audited, so this is
+settled at the moment of creation or never.
+
+**Toolchain provenance.** Can parties who do not trust each other prove the
+binary matches the source? Sixteen can, for Bitcoin Core 31.1. A checksum
+published by the party that shipped the file answers a smaller question.
+
+**Where the secret rests, and what it restores.** Words back up a secret and
+a descriptor backs up a wallet, so a backup holding only one of the two is
+incomplete whatever it is stamped into.
+
+**The dependency test.** If any single maker, app or server in your setup
+disappeared tomorrow, could you still generate, sign, update and recover?
+Every "no" is a trust you carry, whether or not you knew its name.
+
+**The targetedness test**, which @btcpavao's post forces: for every trust
+you keep, count who learned you own Bitcoin in order to grant it.
+
+**Effort, counted honestly.** A procedure nobody completes protects nothing.
+The strongest system on the axes above asks for a Linux install and a
+command line, and stating its case plainly does not change how many people
+will do that. A smaller number will, and they get a better answer. Whoever
+designs custody advice has to hold both facts at once.
+
+None of these questions remove trust. They locate it, and name it, which is
+the difference between a threat model and a preference.
 
 The words were never your wallet. They were one third of one phase of it.
 Now you have the map.
