@@ -1,9 +1,11 @@
 # Seed Generation, Seed In Use, Seed At Rest: An Honest Map of Bitcoin Self-Custody
 
-*Draft v3, 2026-08-18. For Bitcoin Butlers. The framework of this article,
+*Draft v4, 2026-09-15. For Bitcoin Butlers. The framework of this article,
 one secret weighed across three phases of its life, comes from jimbocoin.
 Every checkable claim carries a link; quotations from jimbocoin, Ben
-Westgate and FractalEncrypt come from public posts and correspondence.*
+Westgate, FractalEncrypt, @heavilyarmedclown and @btcpavao come from public
+posts and correspondence, and are reproduced in full rather than summarised
+where they carry an argument against this article's own conclusions.*
 
 ---
 
@@ -123,6 +125,186 @@ convenience at small amounts; the Coldcard incident is the price sheet
 for that convenience at large ones. It is also why some signing devices exclude
 on-device generation from their scope entirely: a signer with no entropy
 story has no entropy story to attack.
+
+## The second axis: who compiled the code that touches your keys
+
+Phase 1 ranked three ways of making a secret by how much unverifiable trust
+each one needs. That ranking holds, and it is incomplete. It weighs the
+entropy and says nothing about the binary that consumes it. A perfect
+shuffle handed to a backdoored library is a perfect shuffle wasted. Two
+practitioners put the missing axis plainly, and both deserve their full
+length rather than a paraphrase.
+
+**The toolchain argument.** [@heavilyarmedclown](https://x.com/heavilyarmedclown):
+
+> Very few people in Bitcoin seem to understand that a sophisticated attacker would not hide security flaws in an apps viewable source code.
+>
+> They would hide it in the prebuilt crypto binaries (AKA the thing that actually touches your private keys).
+>
+> These much more difficult to properly audit and its one of the many reasons why Bitcoin Core is the gold standard for the security critical functions of a Bitcoin Wallet (both generating secure keys AND signing).
+>
+> After "the incident" with coldcard, the overton window has shifted drastically towards entropy, but random enough entropy is only one small piece of what makes cryptography safe.
+>
+> Those of you that are overly focused on "entropy" and wanting to "roll the dice", are actually rolling dice on a single point of failure.
+>
+> Bitcoin Core is one of the very few projects that takes this seriously enough to actually pin its entire build toolchain with guix.
+>
+> This means that dozens of independent contributors can, on their own hardware, run the Guix build and publish their own signed hash attestation that the crypto libraries they ship are exactly what they claim to be.
+>
+> You simply aren't going to find this assurance in the rest of these projects, even the ones that look like they have a ton of github activity (i.e. open source review and contribution).
+>
+> They all rely on single points of trust, which is most often, trusting the one single party that built the crypto library isn't going to rug you with a backdoor.
+>
+> Bad actors will intentionally distract users from this by publishing attestations that prove nothing of substance. End users see a SHA256SUMS file and think verifying it gives them security...
+>
+> ...but the only thing it proves is that nobody messed with the app after it got strung together with some spooky crypto library compiled by some anonymous contributor in Ukraine.
+
+**The record, checked rather than repeated.** The reproducibility claim is
+testable, which is the point of it, so we tested it. Bitcoin Core 31.1
+carries Guix attestations from sixteen independent builders, each having run
+the pinned toolchain on their own hardware and published a signed hash:
+`0xb10c`, `Emzy`, `Sjors`, `achow101`, `benthecarman`, `fanquake`,
+`guggero`, `hebasto`, `m3dwards`, `marcofleon`, `pinheadmz`, `sedited`,
+`sipsorcery`, `svanstaa`, `theStack`, `willcl-ark`. Counted directly in the
+[guix.sigs repository](https://github.com/bitcoin-core/guix.sigs/tree/main/31.1)
+on 2026-09-15, where each name is a directory holding that builder's
+attestation. Sixteen parties who do not need to trust each other arrived at
+identical binaries. No signing device in this article can make that claim,
+and most cannot make any claim about their toolchain at all.
+
+**The same record, and a wider conclusion.**
+[@btcpavao](https://x.com/btcpavao) names the same sixteen and pushes past
+the build question into a second one:
+
+> Strongly agree.
+>
+> When I verified Bitcoin Core 31.1 myself, I didn't stop at checking the SHA256 hash.
+>
+> I imported public PGP keys and verified signatures. More importantly, Bitcoin Core uses reproducible Guix builds: independent builders can build the same release on their own machines and attest that they arrived at the same binaries.
+>
+> Bitcoin Core 31.1 has Guix attestations from 16 independent builders:
+>
+> 0xb10c — github.com/0xb10c
+> Emzy — github.com/Emzy
+> Sjors — github.com/Sjors
+> achow101 — github.com/achow101
+> benthecarman — github.com/benthecarman
+> fanquake — github.com/fanquake
+> guggero — github.com/guggero
+> hebasto — github.com/hebasto
+> m3dwards — github.com/m3dwards
+> marcofleon — github.com/marcofleon
+> pinheadmz — github.com/pinheadmz
+> sedited — github.com/sedited
+> sipsorcery — github.com/sipsorcery
+> svanstaa — github.com/svanstaa
+> theStack — github.com/theStack
+> willcl-ark — github.com/willcl-ark
+>
+> That is a radically different trust model from simply checking a checksum published by the same party that gave you the binary.
+>
+> And frankly, it seems crazy to me that so much of the current discussion has shifted toward worrying about whether users need to generate their own randomness.
+>
+> We routinely trust general-purpose computers and modern operating systems to generate cryptographically strong passwords, passphrases and keys.
+>
+> Password managers do this every day.
+>
+> Anyone who has looked at how a modern OS seeds and maintains its CSPRNG knows that it continuously incorporates entropy from system and hardware events and exposes secure randomness once properly initialized.
+>
+> On a clean, freshly installed general-purpose OS, I am far more comfortable relying on a mature OS CSPRNG and well-reviewed cryptographic software than inventing my own entropy ceremony with dice.
+>
+> The bigger question for me is why we keep introducing specialized Bitcoin hardware in the first place.
+>
+> A device whose explicit purpose is securing Bitcoin creates targetedness. Manufacturers, payment processors, fulfillment companies, shipping providers and other third parties may now have economically valuable information about you: you probably own Bitcoin.
+>
+> If that data leaks, it can enable targeted phishing, social engineering, fake firmware or support messages, seed extraction attempts, SIM attacks, extortion or physical coercion — without anyone breaking the cryptography inside the device.
+>
+> The same trade-off exists with the current mantra of multi-vendor hardware-wallet multisig.
+>
+> Multisig can reduce key-compromise and correlated-device risk.
+>
+> But on the targetedness axis, every additional hardware-wallet vendor can add another manufacturer, customer database, supply chain, shipping provider, email system and specialized dependency to your threat model.
+>
+> If you wanted to create the biggest possible operational headache for yourself and your future heirs, one way would be to buy one device from every hardware-wallet vendor you can find.
+>
+> And there is certainly no shortage of them.
+>
+> You'd accumulate a huge specialized attack surface while repeatedly signaling to companies and their third-party providers that you are someone who takes Bitcoin custody seriously enough to buy dedicated signing devices.
+>
+> To me, that is completely backwards.
+>
+> Once you see the targetedness problem, you can't unsee it.
+>
+> My preference remains:
+>
+> Generic hardware.
+> Linux.
+> Bitcoin Core.
+>
+> Minimize specialized dependencies.
+> Minimize targetedness.
+> Minimize attack surface.
+
+**Where this lands against Phase 1, honestly.** Take the strongest form of
+the disagreement first. Both posts say the entropy argument is the wrong
+thing to obsess over, and one of them would rather trust a mature operating
+system's CSPRNG on a clean install than run a dice ceremony. Phase 1 said
+device generation carries the most unverifiable trust. Both claims are
+correct, because they are claims about different things.
+
+Phase 1's asymmetry survives intact: a CSPRNG's output cannot be verified,
+and an OS CSPRNG is no exception, however well seeded. What the posts
+establish is that the same asymmetry applies one layer down, to the code
+performing the derivation and the signing. A shuffle you watched is worth
+less if the library turning it into a key was compiled by a party you
+cannot identify. So the honest statement is that self-custody has two
+unverifiable-trust axes, not one:
+
+- **Entropy provenance.** Did you witness the randomness? Cards the least
+  trust, dice next, device RNG the most. Unchanged from Phase 1.
+- **Toolchain provenance.** Can independent parties prove the binary
+  matches the source? Bitcoin Core, alone in this article, answers yes
+  sixteen times over. Nearly everything else answers with a checksum
+  published by the same party that shipped the binary, which proves only
+  that the file did not change in transit.
+
+The dice critique cuts hardest exactly where Phase 1 already conceded. Five
+incompatible dice-to-seed constructions are a toolchain problem wearing an
+entropy costume: the rolls are yours, the arithmetic is not, and you cannot
+check the arithmetic. The card procedure is the one method that answers both
+axes at once, because the mapping is a printed lookup table and the only
+computation left is a single cross-checkable checksum.
+
+These two axes are independent, so nothing forces a choice between them.
+Card entropy feeding Bitcoin Core satisfies both, and this article already
+reached that conclusion from the other direction when it noted that
+card-generated seeds would close Yeti Cold's one open gap.
+
+**Targetedness, the axis this article had not priced.** The second half of
+@btcpavao's post is a harder challenge, and it lands. A dedicated signing
+device is a purchase that tells a manufacturer, a payment processor, a
+fulfilment house and a courier that you probably own Bitcoin. The
+cryptography inside the device is irrelevant to that leak. Multi-vendor
+multisig, which this article calls the ceiling for large holdings,
+multiplies the leak by the number of vendors: more customer databases, more
+shipping records, more support inboxes, each one a place your name sits next
+to the fact that you take custody seriously enough to buy hardware for it.
+
+This is a real cost and the article had not named it. It is also a cost with
+a known shape rather than an argument-ender. Generic hardware does not
+escape correlation, it relocates it: the laptop was still bought somewhere,
+and the coins were still acquired somewhere, and for most holders the
+exchange that sold them their Bitcoin already holds the strongest version of
+this information. Cash purchase, second-hand generic hardware and delivery
+to somewhere other than home each cut the leak, and none of them require
+choosing between Core and a signing device. The trade is real in both
+directions: a signer with no radios and a screen you verify against buys you
+something a general-purpose laptop cannot, and it buys it at the price of
+being a Bitcoin-shaped purchase.
+
+So targetedness joins the list of trusts to name rather than the list of
+reasons to stop. The weighing below now carries it as its own line.
+
 
 ## Phase 2: Seed in use, or who signs and on what
 
@@ -309,7 +491,7 @@ k-of-n, checksums verifiable by hand on paper (that hand-verifiability is
 codex32 also holds a property unique among backup formats, and the
 epistemic premise from Phase 2 explains its worth: because its checksums
 are hand-computable, a holder can verify a backup's integrity for
-decades without ever re-entering the secret into hardware — the one
+decades without ever re-entering the secret into hardware. That is the one
 health check that costs no new exposure. Two boundaries complete the
 picture. It encodes BIP32 master seeds, not BIP39 words, and Bitcoin
 Core does not export seeds, so it applies to seeds born outside Core.
@@ -371,8 +553,9 @@ unverifiable trust available at ordinary effort: card entropy closes the
 RNG hole with only the checksum computed on the offline device, the HWW
 gives screen-verified signing and key isolation, and steel words plus a
 printed descriptor cover both halves of the backup. Its remaining trusts
-are the vendor's firmware and supply chain, and its remaining loss modes
-are the human ones. The BIP39 passphrase sits on a knife edge here: it
+are the vendor's firmware and supply chain, its remaining loss modes are the
+human ones, and its remaining leak is targetedness: the purchase itself
+tells several companies that you probably own Bitcoin. The BIP39 passphrase sits on a knife edge here: it
 defends the steel if the steel is found, and it is the component most
 often lost forever, so it trades a theft mode for a loss mode; written
 and stored as seriously as the seed itself, with a small decoy balance on
@@ -381,7 +564,8 @@ skull it tilts the other.
 
 **Yeti Cold.** Core-only 3-of-7 multisig across cheap laptops and
 geography: survives four lost keys, requires three compromised locations
-to steal, trusts Core and nothing else. Its honest costs: USB crossings
+to steal, trusts Core and nothing else, which is the one toolchain here
+that sixteen independent builders can prove. Its honest costs: USB crossings
 instead of QR, radios handled by procedure rather than by absence (pull
 the cards), an on-chain fingerprint from the unusual quorum, and hours of
 setup. And one charge this article's own first section requires us to
@@ -408,13 +592,18 @@ first two for most people, and its own advocates concede the bind: making
 it simpler means making the vendors more alike, and their unlikeness is
 the security. For large holdings with a professional or a patient
 operator, it is the ceiling. Sold to an average person as a starting
-point, it mostly manufactures stuck funds.
+point, it mostly manufactures stuck funds. And it carries the highest
+targetedness cost of the four, because every vendor added to the quorum adds
+a customer database, a shipping record and a support inbox holding your name
+next to the fact that you buy signing hardware.
 
 ## The through-line
 
 One principle survives all three phases: **push trust toward things you
 can physically verify or independently cross-check, and know the name of
-every trust you keep.** Entropy from your own shuffle. Signing code you
+every trust you keep.** Two kinds of verification count, and most custody
+advice argues about only one of them: whether you witnessed the randomness,
+and whether independent parties can prove the binary matches its source. Entropy from your own shuffle. Signing code you
 chose on purpose, on hardware whose radios are absent rather than
 promised off. Words on steel for the secret, a descriptor on paper for
 the map, splitting when privacy of the backup itself matters. None of
@@ -422,7 +611,9 @@ this removes trust; it relocates trust to places where lying is hard.
 And run the dependency test on the result: if any single maker, app, or
 server in your setup disappeared tomorrow, could you still generate,
 sign, update, and recover? Every "no" is a trust you are carrying,
-whether or not you knew its name.
+whether or not you knew its name. Then run the second test, the one
+@btcpavao's post forces: for every trust you keep, count who learned you own
+Bitcoin in order to grant it.
 
 The words were never your wallet. They were one third of one phase of it.
 Now you have the map.
