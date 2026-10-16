@@ -6,7 +6,7 @@ import random
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "corky"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "coresigner"))
 import qrchannel  # noqa: E402
 import base64
 
@@ -156,6 +156,119 @@ _def = qrchannel.frames_to_images([_bframe])[0].size
 _exp = qrchannel.frames_to_images([_bframe], box_size=4, border=2)[0].size
 assert _def == _exp, f"default render scale changed: {_def} != {_exp}"
 print(f"ok   frames_to_images defaults pin box_size=4/border=2 ({_def[0]}px)")
+
+# --- the two things a user does that had never executed ----------------
+# Audit A5, 2026-09-06: PsbtScan's skip and restart paths had never run.
+# Both are ordinary user actions. A stray QR wanders into view mid-scan,
+# and a user points the camera at a different transaction because they
+# changed their mind. Ticket 05 wrote the rules for both and nothing
+# checked them.
+
+_a = qrchannel.psbt_to_frames(
+    base64.b64encode(b"psbt\xff" + b"\x00" * 400).decode(),
+    max_fragment_len=40)
+_b = qrchannel.psbt_to_frames(
+    base64.b64encode(b"psbt\xff" + b"\x11" * 400).decode(),
+    max_fragment_len=40)
+
+_events = []
+_scan = qrchannel.PsbtScan(on_event=lambda kind, _d: _events.append(kind))
+# SEVERAL frames of the first transaction, so progress has somewhere to
+# fall from. Feeding one and comparing was worthless: both sequences are
+# the same length, so one frame of each gives the same percentage and the
+# comparison was true by coincidence. A mutation that deleted the reset
+# survived it (devil's advocate on A5, 2026-09-06).
+for _f in _a[:4]:
+    _scan.feed(_f)
+_progress_before = _scan.progress
+_scan.feed("ur:crypto-psbt/a-stray-code-that-is-not-a-frame-$$$")
+if _scan.skipped != 1:
+    failures.append(f"a stray code was not counted as skipped: "
+                    f"{_scan.skipped}")
+    print(f"FAIL stray code not counted, skipped={_scan.skipped}")
+elif "skipped" not in _events:
+    failures.append("a stray code was skipped silently, with no event")
+    print("FAIL stray code reported nothing to the screen")
+else:
+    print("ok   a stray code mid-scan is counted and reported, not fatal")
+
+_scan.feed(_b[0])                       # a DIFFERENT transaction
+if _progress_before <= 0:
+    failures.append("the first transaction never made progress, so the "
+                    "restart check has nothing to measure")
+    print("FAIL no progress on the first transaction; check is vacuous")
+elif "restart" not in _events:
+    failures.append("a second transaction did not restart the scan")
+    print("FAIL pointing the camera at another transaction did not restart")
+elif _scan.progress >= _progress_before:
+    failures.append(f"progress carried over a restart: "
+                    f"{_progress_before} -> {_scan.progress}")
+    print(f"FAIL progress {_progress_before:.2f} survived the restart "
+          f"({_scan.progress:.2f})")
+else:
+    print(f"ok   a different transaction restarts the scan: progress falls "
+          f"{_progress_before:.0%} -> {_scan.progress:.0%}, so two PSBTs "
+          "cannot be mixed")
+
+# And the assembled result must be the SECOND transaction, not a splice.
+for _f in _b[1:]:
+    if _scan.feed(_f):
+        break
+if _scan.psbt_b64 is None:
+    failures.append("the restarted scan never completed the new transaction")
+    print("FAIL the restarted scan did not finish")
+elif _scan.psbt_b64 != base64.b64encode(b"psbt\xff" + b"\x11" * 400).decode():
+    failures.append("the restarted scan assembled the wrong bytes")
+    print("FAIL the restarted scan spliced two transactions together")
+else:
+    print("ok   the restarted scan assembles the SECOND transaction whole")
+
+# The same rule for a SINGLE-part UR arriving mid-scan. A single-part UR
+# carries no sequence, so frame_identity returns None for it, and the
+# restart test used to require an identity to compare. That meant a
+# one-frame PSBT wandering into view mid-scan COMPLETED the scan with the
+# other transaction and reported nothing (found reading qrchannel.py,
+# 2026-09-08). The review screen still showed the substituted
+# transaction's own outputs, so nothing could be signed unseen, but the
+# user aimed at one transaction and was handed another with no notice.
+_one = qrchannel.psbt_to_frames(
+    base64.b64encode(b"psbt\xff" + b"\x22" * 20).decode())
+if len(_one) != 1:
+    failures.append(f"the single-part fixture is {len(_one)} frames, so it "
+                    "cannot test the single-part path")
+    print(f"FAIL fixture is not single-part ({len(_one)} frames)")
+else:
+    _ev2 = []
+    _s2 = qrchannel.PsbtScan(on_event=lambda kind, _d: _ev2.append(kind))
+    for _f in _a[:4]:
+        _s2.feed(_f)
+    _done = _s2.feed(_one[0])
+    if not _done:
+        failures.append("a single-part UR mid-scan did not complete")
+        print("FAIL the single-part UR was not assembled")
+    elif "restart" not in _ev2:
+        failures.append("a single-part UR replaced the transaction being "
+                        "scanned and said nothing")
+        print("FAIL a single-part UR substituted the transaction in silence")
+    elif _s2.psbt_b64 != base64.b64encode(b"psbt\xff" + b"\x22" * 20).decode():
+        failures.append("the single-part UR assembled the wrong bytes")
+        print("FAIL the single-part UR spliced two transactions")
+    else:
+        print("ok   a single-part UR mid-scan announces the restart before "
+              "handing over a different transaction")
+
+# ...and a scan that only ever sees ONE single-part UR must not announce a
+# restart, or the notice means nothing.
+_ev3 = []
+_s3 = qrchannel.PsbtScan(on_event=lambda kind, _d: _ev3.append(kind))
+_s3.feed(_one[0])
+if "restart" in _ev3:
+    failures.append("a plain single-part scan announced a restart, so the "
+                    "notice fires on the ordinary case too")
+    print("FAIL a plain single-part scan claimed the transaction changed")
+else:
+    print("ok   a plain single-part scan announces no restart")
+
 
 if failures:
     sys.exit(1)

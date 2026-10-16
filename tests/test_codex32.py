@@ -1,4 +1,4 @@
-"""BIP93 official test vectors for corky/codex32.py. Run: python3 test_codex32.py
+"""BIP93 official test vectors for coresigner/codex32.py. Run: python3 test_codex32.py
 
 Sources:
   bitcoin/bips bip-0093.mediawiki: all 5 valid vector families and all
@@ -8,7 +8,7 @@ Sources:
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "corky"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "coresigner"))
 
 import codex32
 from codex32 import (
@@ -391,6 +391,55 @@ for _mn in ("abandon " * 11 + "about",
     _, _rec = codex32.decode_secret(codex32.recover(_shares[:2]))
     check(f"split round-trip ({len(_mn.split())} words): same wallet",
           codex32.to_xprv(_rec), mnemonic_to_xprv(_mn))
+
+# ---- Codex32QR/v1-48: interop against the profile's own vectors --------
+#
+# Ben Westgate asked us not to invent a codex32 QR format and to use the
+# one his SeedSigner fork publishes (corky issue #9, 2026-09-21). He then
+# published it. The profile is `Codex32QR/v1-48` and it is written in
+# docs/codex32_qr/Codex32QR_Spec.md of his seedsigner fork, which is
+# FractalEncrypt/FractalEncrypt_seedsigner and not this tree. Its
+# vectors are below. A round-trip of our own code proves nothing
+# about interoperability; recovering HIS secret from HIS two shares does.
+#
+# The profile is PLAIN TEXT in a QR: 48 characters, version 3, 29x29, EC
+# level L. So there is nothing for us to encode or decode, and that is the
+# point of answering his issue this way: the format is his document, and
+# the only thing we own is whether we accept it.
+QR_A = "MS12L0VEAARWENFLUFFYTAFLCATQTTGGERGGM0C6A8FRJE57"
+QR_C = "MS12L0VECGREGGTTQTACLFATYFFULFNEWRAWFG0DZCVNPVSE"
+QR_S = "MS12L0VESNR0FEXZ5X5VKQ5ZSQYGKYZCCRXEHDEMFNYQDH2U"
+
+for _name, _v in (("share A", QR_A), ("share C", QR_C), ("secret S", QR_S)):
+    check(f"v1-48 {_name} is 48 characters", len(_v), 48)
+    check(f"v1-48 {_name} validates", codex32.validate(_v), _v.lower())
+
+check("v1-48: his S recovers from his A and C",
+      codex32.recover([codex32.validate(QR_A), codex32.validate(QR_C)]),
+      QR_S.lower())
+check("v1-48: the three carry one header (k and identifier)",
+      {v.lower()[3:8] for v in (QR_A, QR_C, QR_S)}, {"2l0ve"})
+
+# Section 3.2: a hyphen is a valid bech32 HRP character, so a payload
+# carrying one MUST be rejected and never silently stripped. Section 3.3:
+# a mixed-case payload is invalid before canonicalisation.
+for _label, _bad in (
+        ("a hyphen inside the HRP", "MS1-2L0VEAARWENFLUFFYTAFLCATQTTGGERGGM0C6A8FRJE57"),
+        ("a hyphen inside the body", QR_A[:12] + "-" + QR_A[13:]),
+        ("mixed case", "Ms12L0VEAARWENFLUFFYTAFLCATQTTGGERGGM0C6A8FRJE57"),
+        ("one character short", QR_A[:-1]),
+        ("one character flipped", QR_A[:-1] + ("8" if QR_A[-1] != "8" else "7"))):
+    try:
+        codex32.validate(_bad)
+        FAILURES.append(f"FAIL v1-48 rejects {_label}: it was ACCEPTED")
+        print(f"FAIL v1-48 rejects {_label}: it was ACCEPTED")
+    except codex32.Codex32Error:
+        print(f"ok   v1-48 rejects {_label}")
+
+# Section 3.2.1: whitespace around a payload is normalised, not refused.
+check("v1-48 normalises surrounding whitespace",
+      codex32.validate(f"  {QR_A}\n"), QR_A.lower())
+
 
 if FAILURES:
     print(f"{len(FAILURES)} FAILURES")

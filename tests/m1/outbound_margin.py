@@ -1,12 +1,12 @@
-"""How much margin Corky's own QR output has, measured.
+"""How much margin Core Signer's own QR output has, measured.
 
-legibility_rig.py asks whether Corky can read Sparrow. This asks the other
-direction: whether a coordinator can read Corky. It found a real number, so it
+legibility_rig.py asks whether Core Signer can read Sparrow. This asks the other
+direction: whether a coordinator can read Core Signer. It found a real number, so it
 lives here rather than in a scratch file.
 
-Corky renders at MAX_FRAGMENT_LEN = 100, which produces 244-character UR frames,
+Core Signer renders at MAX_FRAGMENT_LEN = 100, which produces 244-character UR frames,
 which is a 49x49 QR. Add the 2-module quiet zone each side and that is 53
-modules across. The 320x240 panel allows box_size = 240 // 53 = 4, so Corky
+modules across. The 320x240 panel allows box_size = 240 // 53 = 4, so Core Signer
 renders at exactly **4.0 pixels per module** and cannot go higher without
 fewer modules.
 
@@ -25,9 +25,10 @@ from pathlib import Path
 import qrcode
 
 REPO = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO / "corky"))
+sys.path.insert(0, str(REPO / "coresigner"))
 sys.path.insert(0, str(REPO / "hw" / "vendor"))
 import qrchannel  # noqa: E402
+import screens     # noqa: E402
 
 SPARROW_BUILD = REPO / "tests/sparrow/.build"
 JAVA = SPARROW_BUILD / "jdk-25.0.4.1+1/Contents/Home/bin/java"
@@ -53,7 +54,7 @@ def main():
         images = qrchannel.frames_to_images(frames, panel=PANEL)
         for i, img in enumerate(images):
             path = tmp / f"{trial}_{i}.png"
-            qrchannel.fit_to_panel(img, *PANEL).save(path)
+            screens.qr_frame(*PANEL, img).save(path)
             total += 1
             qr = qrcode.QRCode(border=2,
                                error_correction=qrcode.constants.ERROR_CORRECT_L)

@@ -5,12 +5,15 @@ which the e2e test never exercises. Run: python3 tests/test_filechannel.py
 """
 
 import base64
+import errno
+import os
+import stat
 import sys
 import tempfile
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "corky"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "coresigner"))
 import filechannel  # noqa: E402
 
 FAILURES = []
@@ -34,7 +37,7 @@ def check_raises(name, fn, *a):
         print(f"FAIL {name}")
 
 
-tmp = Path(tempfile.mkdtemp(prefix="corky-fc-unit-"))
+tmp = Path(tempfile.mkdtemp(prefix="coresigner-fc-unit-"))
 
 # ---- wait_stable ------------------------------------------------------
 
@@ -52,7 +55,18 @@ check("missing file not stable", filechannel.wait_stable(tmp / "nope.psbt"), Fal
 # An empty file is never "stable" (size > 0 is required), so it times out.
 empty = tmp / "empty.psbt"
 empty.write_bytes(b"")
-check("empty file not stable", filechannel.wait_stable(empty, checks=2, interval=0.01), False)
+# An empty file IS stable: a coordinator that has finished writing never
+# leaves zero bytes, and read_psbt is the one that refuses it, by size,
+# with a message naming the file. Requiring size > 0 here instead made an
+# empty file invisible to the device, which waited on "insert the stick…"
+# for ever with the file already in front of it (found 2026-09-05).
+check("empty file is stable", filechannel.wait_stable(empty, checks=2, interval=0.01), True)
+try:
+    filechannel.read_psbt(empty)
+    check("empty file refused by read_psbt", "no error", "FileChannelError")
+except filechannel.FileChannelError as exc:
+    check("empty file refused by name and size",
+          "0 bytes" in str(exc) and empty.name in str(exc), True)
 
 # A file still being written must NOT be reported stable until writing
 # stops. Drive wait_stable with a scripted stat() so the timing is exact:
@@ -80,6 +94,41 @@ check("growing file not stable", filechannel.wait_stable(grow, checks=3, interva
 # Grows, then holds at 4000 for enough polls to satisfy checks=3 -> True.
 settle = _ScriptedPath([10, 20, 30, 4000, 4000, 4000, 4000])
 check("file stable once writing stops", filechannel.wait_stable(settle, checks=3, interval=0), True)
+
+# The cap is on what is READ, not on an earlier measurement. The stick is
+# shared with the coordinator, so a file can grow between being measured
+# and being read; a 1KB file that grew in that gap was read at 6MB against
+# the 4MB cap (devil's advocate on audit A1, 2026-09-06). There is no gap
+# now, and this is the check that there is not one.
+grower = tmp / "grow.psbt"
+grower.write_bytes(b"\x70\x73\x62\x74\xff" + b"\x00" * 512)
+_real_open = Path.open
+
+
+def _grow_on_open(self, *a, **k):
+    # os.open, not write_bytes: write_bytes goes through Path.open, which
+    # is the method being patched, and recurses for ever.
+    if self.name == "grow.psbt":
+        fd = os.open(grower, os.O_WRONLY | os.O_TRUNC)
+        try:
+            os.write(fd, b"\x70\x73\x62\x74\xff"
+                     + b"\x00" * (filechannel.MAX_PSBT_BYTES * 2))
+        finally:
+            os.close(fd)
+    return _real_open(self, *a, **k)
+
+
+Path.open = _grow_on_open
+try:
+    filechannel.read_psbt(grower)
+    check("a file that grows during the read is refused",
+          "accepted", "FileChannelError")
+except filechannel.FileChannelError as exc:
+    check("a file that grows during the read is refused",
+          "over" in str(exc) and grower.name in str(exc), True)
+finally:
+    Path.open = _real_open
+
 
 # A 1-byte file that holds still is stable: the guard is size > 0, not > 1.
 tiny = _ScriptedPath([1, 1, 1, 1])
@@ -127,6 +176,73 @@ check("text psbt not double-encoded", base64.b64decode(got), payload)
 names = {p.name for p in filechannel.find_unsigned(tmp)}
 check("find_unsigned excludes signed", "a-signed.psbt" in names, False)
 check("find_unsigned includes unsigned", "a.psbt" in names, True)
+
+# A stick is FAT32 or exFAT, and neither promises that fsync on a
+# DIRECTORY succeeds. write_signed guards that call and carries on,
+# because the file's own data is already down; losing the directory
+# entry's flush is not losing the signature. Rule 7: the only thing that
+# needed the board here was one syscall, so fake that syscall. Faked as
+# the filesystem fails it, EINVAL, not as a convenient generic error.
+# (Audit A5, 2026-09-06: this branch had never executed.)
+real_fsync = os.fsync
+dir_fsyncs = []
+
+
+def refuse_dir_fsync(fd):
+    if stat.S_ISDIR(os.fstat(fd).st_mode):
+        dir_fsyncs.append(fd)
+        raise OSError(errno.EINVAL, "Invalid argument")
+    return real_fsync(fd)
+
+
+src = tmp / "tosign.psbt"
+src.write_bytes(b"psbt\xff\x09")
+payload = base64.b64encode(b"psbt\xffsigned").decode()
+os.fsync = refuse_dir_fsync
+try:
+    out = filechannel.write_signed(src, payload)
+finally:
+    os.fsync = real_fsync
+check("a filesystem that refuses directory fsync does not stop the write",
+      out.exists() and base64.b64encode(out.read_bytes()).decode() == payload,
+      True)
+check("and the directory fsync really was attempted and refused",
+      len(dir_fsyncs), 1)
+
+# A SHORT WRITE must take its own half-written file with it.
+#
+# Audit A3 made write_signed refuse a short write, which was right, and
+# left the partial file on the stick, which was not. 5000 bytes of a
+# 5005-byte PSBT sat there under exactly the name a successful signature
+# has (measured 2026-09-08). The signature is not lost, because the
+# device falls through to the QR, but the user has a file they have every
+# reason to read as their signed transaction, and whether a truncated
+# PSBT is refused by a parser is that parser's business, not something to
+# leave to chance.
+full = tmp / "fullstick"
+full.mkdir()
+short_src = full / "tx.psbt"
+short_src.write_bytes(b"psbt\xff")
+big = base64.b64encode(b"psbt\xff" + b"\x01" * 5000).decode()
+real_write = os.write
+
+
+def hundred_bytes_left(fd, data):
+    return real_write(fd, data[:100]) if len(data) > 100 else 0
+
+
+os.write = hundred_bytes_left
+try:
+    filechannel.write_signed(short_src, big)
+    refused = False
+except filechannel.FileChannelError:
+    refused = True
+finally:
+    os.write = real_write
+check("a short write is refused", refused, True)
+check("and takes its half-written file with it, so nothing on the stick "
+      "can be read as a signed transaction",
+      sorted(q.name for q in full.iterdir()), ["tx.psbt"])
 
 print()
 if FAILURES:

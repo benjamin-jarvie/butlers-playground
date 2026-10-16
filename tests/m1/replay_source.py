@@ -16,6 +16,10 @@ import itertools
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "coresigner"))
+import qrchannel  # noqa: E402
+import screens     # noqa: E402
+
 
 class ReplaySource:
     """Yields a scripted list of decoded QR payloads.
@@ -92,7 +96,7 @@ def with_garbage(frames, at=1):
 
 
 def _selftest():
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "corky"))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "coresigner"))
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "hw" / "vendor"))
     import qrchannel
 
@@ -137,7 +141,7 @@ def _selftest():
     # Dropping a whole pure part used to strand the transfer. Since ticket 09
     # the frame list carries fountain parts past the pure cycle, so the mixed
     # parts reconstruct what was lost. This is the property that keeps a
-    # transfer alive when zxing cannot read one of Corky's frames.
+    # transfer alive when zxing cannot read one of Core Signer's frames.
     got, err, n = assemble(ReplaySource(frames[1:]))
     checks.append(("missing pure part recovers from fountain parts",
                    got == psbt, "ticket 09"))
@@ -157,7 +161,7 @@ def _selftest():
     paths = []
     for i, img in enumerate(images):
         q = tmp / f"{i:03d}.png"
-        qrchannel.fit_to_panel(img, 320, 240).save(q)
+        screens.qr_frame(320, 240, img).save(q)
         paths.append(q)
     src = ImageReplaySource(paths)
     got, err, n = assemble(src)
@@ -173,3 +177,22 @@ def _selftest():
 
 if __name__ == "__main__":
     sys.exit(_selftest())
+
+
+def scan_psbt(source, clock=None, timeout=qrchannel.NO_PROGRESS_TIMEOUT,
+              on_event=None, abort=None):
+    """Drive a QR source to completion and return the base64 PSBT.
+
+    A test-side loop over PsbtScan. It lived in coresigner/qrchannel.py until
+    2026-09-05, when a dead-code pass found the device never calls it:
+    state_load drives PsbtScan itself, because it must also watch the
+    buttons and paint the viewfinder. Shipped code that exists only for a
+    test is weight the signer carries for nothing, so it moved here.
+    """
+    scan = qrchannel.PsbtScan(clock=clock, timeout=timeout, on_event=on_event)
+    for frame in source.scan_psbt_frames():
+        if abort is not None and abort():
+            raise qrchannel.ScanAborted("scan cancelled")
+        if scan.feed(frame):
+            return scan.psbt_b64
+    raise qrchannel.ScanTimeout(scan._why("frames ran out"))

@@ -1,13 +1,13 @@
-"""Adversarial signing suite for Corky. Regtest only, no real funds.
+"""Adversarial signing suite for Core Signer. Regtest only, no real funds.
 
 Each block states an ATTACK, the expected SAFE behavior, and asserts it.
 House style: ok-lines on success, sys.exit(1) on any failure.
 
 The threat model: a malicious or buggy coordinator (Sparrow, or an
-impostor) controls every byte that crosses the air gap. Corky must never
+impostor) controls every byte that crosses the air gap. Core Signer must never
 sign what it does not own, never hide a change of outputs behind a review
 screen, and never hang or crash on hostile input. Bitcoin Core is the only
-PSBT parser and the only signer; these tests prove Corky's plumbing around
+PSBT parser and the only signer; these tests prove Core Signer's plumbing around
 Core stays safe when the input is an attack.
 
 Run: python3 tests/test_adversarial.py
@@ -25,7 +25,7 @@ from decimal import Decimal
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "corky"))
+sys.path.insert(0, str(ROOT / "coresigner"))
 sys.path.insert(0, str(ROOT / "shim"))
 
 import codex32  # noqa: E402
@@ -66,7 +66,7 @@ def expect_raises(name, excs, fn, *args, **kwargs):
 # ======================================================================
 
 def setup_regtest(rpc):
-    """Corky session + coordinator watch wallet funded with real coins."""
+    """Core Signer session + coordinator watch wallet funded with real coins."""
     signer.open_session(rpc, MNEMONIC)
     pubs = signer.public_descriptors(rpc)
     rpc.call("createwallet", WATCH, True, True, "", False, True)
@@ -92,7 +92,7 @@ def funded_psbt(rpc, amount=1.5):
 #  Attack: the coordinator inflates the witness_utxo amount inside the
 #  PSBT. An air-gapped signer cannot check that amount against the chain.
 #  Expected safe behavior: describe_psbt reports EXACTLY the fee Core
-#  derives from the supplied (lying) amount. Corky invents no number of
+#  derives from the supplied (lying) amount. Core Signer invents no number of
 #  its own; it faithfully surfaces Core's computation and the review
 #  screen carries fee_note saying the amount is coordinator-supplied.
 #  This is the DOCUMENTED coordinator-trust limit of any air-gapped
@@ -206,7 +206,7 @@ def _b64encode(b):
 #  ATTACK 2 — OUTPUT SUBSTITUTION AFTER REVIEW
 # ======================================================================
 #
-#  Attack: Corky reviews and signs a PSBT paying address D. The
+#  Attack: Core Signer reviews and signs a PSBT paying address D. The
 #  coordinator then swaps output D for attacker address D' in the final
 #  transaction. Expected safe behavior: the signature covers the outputs
 #  (SIGHASH_ALL), so the tampered transaction fails validation. Core's
@@ -215,7 +215,7 @@ def _b64encode(b):
 def attack_output_substitution(rpc):
     psbt, _ = funded_psbt(rpc)
     signed = signer.sign_psbt(rpc, psbt)
-    assert signed["complete"], "attack2 setup: Corky did not fully sign"
+    assert signed["complete"], "attack2 setup: Core Signer did not fully sign"
     final_hex = rpc.call("finalizepsbt", signed["psbt"])["hex"]
 
     # Baseline: the untampered signed tx is accepted.
@@ -278,7 +278,7 @@ def attack_malformed(rpc):
                       signer.sign_psbt, rpc, bad)
 
     # -- filechannel: size guard rejects empty and oversized before parsing
-    tmp = Path(tempfile.mkdtemp(prefix="corky-adv-"))
+    tmp = Path(tempfile.mkdtemp(prefix="coresigner-adv-"))
     try:
         empty = tmp / "empty.psbt"
         empty.write_bytes(b"")
@@ -301,18 +301,202 @@ def attack_malformed(rpc):
                   qrchannel.FrameAssembler().feed,
                   "ur:crypto-psbt/" + "a" * (qrchannel.MAX_FRAME_CHARS + 1))
 
+    # The three above are what checked_frame REFUSES. Past that gate the
+    # vendored BC-UR decoder runs on attacker bytes, and the module
+    # promises it "raises QrChannelError, never anything else", which
+    # main.HANDLED takes literally: anything else ends the process.
+    #
+    # A first version of this check fed random letters and declared
+    # victory. A devil's advocate proved it measured nothing: random
+    # bytewords fail their CRC in the vendored decoder, so NOT ONE frame
+    # ever reached the accumulator, and the whole check passed with
+    # checked_frame deleted (2026-09-06). What follows uses frames with
+    # VALID checksums, built by our own encoder, so they get all the way
+    # in and the accumulator is really exercised.
+    good = qrchannel.psbt_to_frames(base64.b64encode(
+        b"psbt\xff" + b"\x00" * 900).decode(), max_fragment_len=40)
+    other = qrchannel.psbt_to_frames(base64.b64encode(
+        b"psbt\xff" + b"\x11" * 900).decode(), max_fragment_len=40)
+    if len(good) < 4 or len(other) < 4:
+        fail("attack3 qr accumulator: could not build a multi-part sequence")
+    else:
+        asm = qrchannel.FrameAssembler()
+        dec = asm._decoder.fountain_decoder
+        # Two different transactions interleaved, thousands of times. Both
+        # have valid CRCs, so both are accepted and stored.
+        for _ in range(400):
+            for a_frame, b_frame in zip(good, other, strict=False):
+                try:
+                    asm.feed(a_frame)
+                    asm.feed(b_frame)
+                except qrchannel.QrChannelError:
+                    pass
+        held = len(dec.simple_parts) + len(dec.mixed_parts)
+        if held > len(good) + len(other):
+            fail(f"attack3 qr accumulator: holds {held} parts after "
+                 f"{800 * len(good)} frames of two sequences")
+        else:
+            ok(f"attack3 qr accumulator: {800 * len(good)} valid frames "
+               f"from two transactions leave {held} parts held, not a "
+               "part per frame")
+
+    # And the frames that pass the gate but are structurally junk must be
+    # contained rather than crashing. This asserts containment only: the
+    # vendored decoder returns False for all of them, which is a property
+    # of ur2 and not of our guard, and saying so is the honest claim.
+    passes_the_gate = {
+        "empty body": "ur:crypto-psbt/",
+        "junk bytewords": "ur:crypto-psbt/zzzzzzzz",
+        "sequence with no data": "ur:crypto-psbt/1-3/",
+        "zero sequence": "ur:crypto-psbt/0-0/aaaa",
+        "colossal sequence": "ur:crypto-psbt/1-999999999/aaaaaaaaaaaa",
+        "only separators": "ur:crypto-psbt/-----",
+    }
+    uncontrolled, assembled = [], []
+    for label, frame in passes_the_gate.items():
+        a2 = qrchannel.FrameAssembler()
+        try:
+            a2.feed(frame)
+        except qrchannel.QrChannelError:
+            pass
+        except Exception as exc:      # noqa: BLE001
+            uncontrolled.append(f"{label}: {type(exc).__name__}: {exc}")
+        if a2.psbt_b64 is not None:
+            assembled.append(label)
+    if uncontrolled:
+        fail(f"attack3 qr past-the-gate: uncontrolled {uncontrolled}")
+    elif assembled:
+        fail(f"attack3 qr past-the-gate: assembled a PSBT from {assembled}")
+    else:
+        ok(f"attack3 qr past-the-gate: ur2 contains {len(passes_the_gate)} "
+           "structurally invalid frames rather than raising")
+
+
+# ======================================================================
+#  ATTACK 7 — THE ENVELOPE, NOT THE PAYLOAD
+# ======================================================================
+#
+#  PLAN A-11 says Core Signer treats key material as opaque bytes and Core is
+#  the only parser. That is a claim about the PAYLOAD. The ENVELOPE is
+#  parsed by us: filenames, file types, sizes, the write itself. Audit A3
+#  (2026-09-06) asked what a hostile envelope makes the device do, and
+#  found one thing that was not a refusal.
+#
+#  Nothing here needs bitcoind.
+
+def attack_hostile_envelope():
+    import base64
+    import stat as statmod
+    tmp = Path(tempfile.mkdtemp(prefix="coresigner-env-"))
+    outside = Path(tempfile.mkdtemp(prefix="coresigner-out-"))
+    try:
+        # -- What find_unsigned will pick up off a stick somebody else
+        #    wrote. A FIFO is the dangerous one: opening one for reading
+        #    BLOCKS until a writer appears, which on a device with no
+        #    shell is a hang with no way out. is_file() is what stops it,
+        #    and nothing said so.
+        (tmp / "dir.psbt").mkdir()
+        os.mkfifo(tmp / "fifo.psbt")
+        (tmp / "dangling.psbt").symlink_to(tmp / "nothing-here")
+        (tmp / "already-signed.psbt").write_bytes(b"psbt\xff")
+        (tmp / "real.psbt").write_bytes(b"psbt\xff\x01")
+        picked = {p.name for p in filechannel.find_unsigned(tmp)}
+        for name, why in (("dir.psbt", "a directory"),
+                          ("fifo.psbt", "a FIFO, which would block for ever"),
+                          ("dangling.psbt", "a symlink to nothing")):
+            if name in picked:
+                fail(f"attack7: find_unsigned offered {why}")
+            else:
+                ok(f"attack7: {why} is not offered as a PSBT")
+        if "real.psbt" not in picked:
+            fail("attack7: find_unsigned missed the real file, so the "
+                 "checks above prove only that it finds nothing")
+        else:
+            ok("attack7: the real file is still found")
+
+        # -- Every hostile shape must raise something HANDLED catches, so
+        #    the panel holds an error instead of the process ending.
+        HANDLED = (filechannel.FileChannelError, OSError)
+        for label, path in (("a directory", tmp / "dir.psbt"),
+                            ("a vanished file", tmp / "never.psbt"),
+                            ("a symlink to nothing", tmp / "dangling.psbt")):
+            expect_raises(f"attack7 read {label}", HANDLED,
+                          filechannel.read_psbt, path)
+
+        # -- THE WRITE. os.write is one write(2), and write(2) may be
+        #    SHORT. A stick with 100 bytes left takes 100, returns 100 and
+        #    raises nothing. write_signed ignored the count, so a full or
+        #    failing medium left a truncated signature behind a screen
+        #    that said the file was written, and the user pulls the stick
+        #    before anyone finds out. A half-written PSBT is not a PSBT.
+        src = tmp / "real.psbt"
+        payload = base64.b64encode(b"psbt\xff" + b"S" * 4000).decode()
+        want = len(base64.b64decode(payload))
+        real_write = os.write
+
+        def stalls_when_full(fd, data):
+            return real_write(fd, data[:100]) if len(data) > want - 200 else 0
+
+        os.write = stalls_when_full
+        try:
+            out = filechannel.write_signed(src, payload)
+        except filechannel.FileChannelError as exc:
+            ok(f"attack7 write: a full medium is refused ({str(exc)[:44]})")
+        except Exception as exc:                       # noqa: BLE001
+            fail(f"attack7 write: uncontrolled {type(exc).__name__}: {exc}")
+        else:
+            fail(f"attack7 write: said it wrote {out.name}, and put "
+                 f"{out.stat().st_size} of {want} bytes on the medium")
+        finally:
+            os.write = real_write
+
+        # A medium that is merely SLOW, taking the bytes 100 at a time,
+        # must still complete. A guard that refuses those is a guard that
+        # breaks the working case.
+        os.write = lambda fd, data: real_write(fd, data[:100])
+        try:
+            out = filechannel.write_signed(src, payload)
+            size = out.stat().st_size
+            ok(f"attack7 write: a slow medium still completes ({size} bytes)") \
+                if size == want else \
+                fail(f"attack7 write: slow medium wrote {size} of {want}")
+        finally:
+            os.write = real_write
+
+        # -- A read-only medium, which is what a stick with its lock tab
+        #    on looks like. Refuse, do not crash.
+        ro = Path(tempfile.mkdtemp(prefix="coresigner-ro-"))
+        (ro / "a.psbt").write_bytes(b"psbt\xff")
+        os.chmod(ro, statmod.S_IRUSR | statmod.S_IXUSR)
+        try:
+            expect_raises("attack7 write to a read-only medium", OSError,
+                          filechannel.write_signed, ro / "a.psbt", payload)
+        finally:
+            os.chmod(ro, 0o700)
+            shutil.rmtree(ro, ignore_errors=True)
+
+        # -- Nothing above may write outside the channel it was given.
+        strays = list(outside.iterdir())
+        if strays:
+            fail(f"attack7: wrote outside the channel: {strays}")
+        else:
+            ok("attack7: no hostile shape wrote outside its own directory")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+        shutil.rmtree(outside, ignore_errors=True)
+
 
 # ======================================================================
 #  ATTACK 4 — UNOWNED INPUT
 # ======================================================================
 #
-#  Attack: ask Corky to sign a PSBT spending a UTXO for which the Corky
+#  Attack: ask Core Signer to sign a PSBT spending a UTXO for which the Core Signer
 #  wallet holds no descriptor. Expected safe behavior: walletprocesspsbt
-#  returns complete=False. Corky signs only what it owns and surfaces the
+#  returns complete=False. Core Signer signs only what it owns and surfaces the
 #  incomplete result rather than pretending it is broadcastable.
 
 def attack_unowned_input(rpc):
-    # A normal wallet WITH its own private keys, unrelated to Corky.
+    # A normal wallet WITH its own private keys, unrelated to Core Signer.
     rpc.call("createwallet", "stranger", False, False, "", False, True)
     saddr = rpc.call("getnewaddress", wallet="stranger")
     rpc.call("generatetoaddress", 101, saddr)
@@ -321,9 +505,9 @@ def attack_unowned_input(rpc):
                       {"fee_rate": 10}, True, wallet="stranger")
     result = signer.sign_psbt(rpc, funded["psbt"])
     if result["complete"]:
-        fail("attack4: Corky signed a PSBT it does not own (complete=True)")
+        fail("attack4: Core Signer signed a PSBT it does not own (complete=True)")
         return
-    ok("attack4 unowned-input: walletprocesspsbt complete=False; Corky "
+    ok("attack4 unowned-input: walletprocesspsbt complete=False; Core Signer "
        "does not sign what it cannot, incomplete result surfaced")
 
 
@@ -332,8 +516,8 @@ def attack_unowned_input(rpc):
 # ======================================================================
 #
 #  Attack / concern: a nonstandard sighash (NONE/SINGLE/ANYONECANPAY)
-#  would let a coordinator strip Corky's commitment to the outputs.
-#  Expected safe behavior: Corky never passes a sighash override to
+#  would let a coordinator strip Core Signer's commitment to the outputs.
+#  Expected safe behavior: Core Signer never passes a sighash override to
 #  walletprocesspsbt (verified by reading signer.sign_psbt), so Core uses
 #  the default SIGHASH_ALL and every signature ends in the 0x01 byte.
 
@@ -355,7 +539,7 @@ def attack_sighash(rpc):
     if not sig.endswith("01"):
         fail(f"attack5: signature sighash byte is 0x{sig[-2:]}, not 0x01")
         return
-    ok(f"attack5 sighash byte: signature ends 0x01 (SIGHASH_ALL)")
+    ok("attack5 sighash byte: signature ends 0x01 (SIGHASH_ALL)")
 
 
 # ======================================================================
@@ -459,7 +643,7 @@ def _free_port():
 
 
 def main():
-    datadir = tempfile.mkdtemp(prefix="corky-adv-regtest-")
+    datadir = tempfile.mkdtemp(prefix="coresigner-adv-regtest-")
     # A private RPC port, written into the datadir conf so bitcoin-cli finds
     # it. This isolates the suite from any other regtest daemon that a
     # concurrent session may be running on the default port.
@@ -481,6 +665,7 @@ def main():
         # No-bitcoind tests first (fast, independent of the daemon).
         attack_codex32()
         attack_shim()
+        attack_hostile_envelope()
 
         setup_regtest(rpc)
         attack_false_fee(rpc)

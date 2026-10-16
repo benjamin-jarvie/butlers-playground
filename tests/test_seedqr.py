@@ -1,7 +1,7 @@
 """SeedQR decode tests. Run: python3 tests/test_seedqr.py"""
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "corky"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "coresigner"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shim"))
 import seedqr
 from bip39_shim import validate_mnemonic

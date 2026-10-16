@@ -1,12 +1,14 @@
-# Corky: a stateless, air-gapped PSBT signer that runs Bitcoin Core's wallet
+# Core Signer: a stateless, air-gapped PSBT signer that runs Bitcoin Core's wallet
 *Plan v1 → devil's advocate → v2 → devil's advocate → v3. 2026-08-17.*
 
 ## Review outcome (Ben, 2026-08-17)
 
 - Approved: hardware on hand, Sparrow as v1 coordinator, v1 scope freeze.
 - Shim disclosure: **explicit, not fine print.** The README leads with it (A-6 superseded).
-- Name: **Corky.** Tagline: *Core's keys, nothing kept.*
+- Name: **Core Signer.** Tagline: *Core's keys, nothing kept.*
 - Shim built and passing all official vectors (`shim/test_shim.py`). Next gate: M0.
+  **Superseded by A-22: the shim and its tests are deleted. Keys arrive as
+  xprv or descriptor, so nothing in the tree turns words into a seed.**
 
 ## Amendments after review (Ben, 2026-08-17, second pass)
 
@@ -20,7 +22,7 @@
   regardless. Rust would also force the shim onto crates.io dependencies,
   destroying its stdlib-only claim, and the Pi camera/LCD ecosystem is
   Python-mature (SeedSigner's own drivers). Decision: Python for v1, under
-  this frozen rule: **Corky's code never parses untrusted bytes. PSBTs pass
+  this frozen rule: **Core Signer's code never parses untrusted bytes. PSBTs pass
   through as opaque strings; Bitcoin Core is the only parser.** The zbar QR
   decoder (C, both languages) gets length caps and charset checks before its
   output is used. A Rust front-end rewrite is noted as a legitimate v2
@@ -28,7 +30,7 @@
 - **A-12: hot-swap microSD channel is now a v1 requirement (Ben, second pass).**
   The mechanism is SeedSigner OS's trick: the operating system runs entirely
   from RAM after boot, so the boot microSD can be removed and reused as the
-  PSBT sled (`/mnt/microsd` watcher). For Corky this means a minimal
+  PSBT sled (`/mnt/microsd` watcher). For Core Signer this means a minimal
   RAM-resident image (buildroot-style) carrying bitcoind + Python + the UI.
   *Devil's advocate, on the record:* this is now the riskiest item in the
   project. The rootfs, bitcoind, the ramdisk datadir and the UI must all
@@ -41,6 +43,80 @@
   transfer if 512MB cannot hold the RAM image; microSD hot-swap then waits
   for a 1GB-class board). Side benefit if it lands: statelessness becomes
   structural — the OS itself is immutable and nothing can persist anywhere.
+- **A-12b: how SeedSigner actually does it, read from their build
+  (2026-09-08).** `seedsigner-os` at `c4cb767`, target `pi02w`, which is
+  the same board. The mechanism is not a read-only mount and not an
+  overlayfs. It is `BR2_TARGET_ROOTFS_INITRAMFS=y`: the whole root
+  filesystem is a gzipped cpio inside the kernel image, and the card
+  carries **one 50MB FAT partition** holding firmware, kernel and
+  overlays. Their `/etc/fstab` mounts `/dev/root` `noauto`. So there is no
+  writable filesystem on the card at all, and the hot-swap in A-12 works
+  because after boot the card is not holding anything.
+
+  That is the difference between Core Signer's statelessness and theirs, and it
+  is worth stating plainly before M3 starts. **Ours is a policy: a tmpfs
+  datadir, `harden.sh`, no swap, and a leak check that says so. Theirs is
+  a property of the medium.** A policy is a set of things that must all
+  keep being true. A medium with nowhere to write is one thing that is
+  true. `tests/test_no_persistence.py` and `image/leak-check.sh` exist
+  because ours needs proving on every run; theirs would not.
+
+  What this changes about the A-12 risk: **it is smaller than the
+  amendment feared, and the arithmetic now exists.** Measured 2026-09-08,
+  all of it from the shipped artefacts rather than from estimates.
+
+  | | |
+  |---|---|
+  | SeedSigner 0.8.7 pi02w, whole card | 33MB (29.5MB `zImage`, 3.7MB firmware) |
+  | that `zImage`, decompressed (kernel **and** initramfs) | 36.7MB |
+  | `bitcoind` 31.1 aarch64, stripped | **16.4MB** |
+  | `bitcoin-cli` | 2.6MB |
+  | Raspberry Pi OS Lite, resident, on the board today | **~168MB** |
+
+  That last figure is the one that decides it, and it was already in
+  FLASH.md waiting to be subtracted. At 250 ordinary inputs the board
+  reports bitcoind 65MB, Core Signer 21MB and 226MB MemAvailable, against
+  480MB after `gpu_mem=32`. So 254MB is genuinely resident and 168MB of
+  it is the operating system.
+
+  **A RAM-resident image is very likely to use LESS memory than what we
+  run now, and the mechanism is the opposite of the intuition.** An
+  initramfs is unpacked into a tmpfs that is held for ever and cannot be
+  reclaimed without swap, which we do not have. A disk rootfs is read
+  through the page cache, which the kernel CAN evict. Per byte, the
+  initramfs is the expensive one. It wins anyway, because a
+  purpose-built image at 40 to 90MB resident beats a general-purpose
+  distribution's 168MB working set by more than the reclaim advantage is
+  worth. SeedSigner already carries Python, numpy, picamera and pyzbar,
+  which is most of what Core Signer needs; adding 19MB of Core binaries to
+  their 37MB is not what breaks a 512MB board.
+
+  What would confirm it: build once and read MemAvailable on the same
+  250-input run. Until then this is arithmetic on measured parts, which
+  is better than the guess A-12 recorded and is still not a measurement
+  of the thing itself.
+- **A-12c: their reproducibility traps, taken rather than re-paid
+  (2026-09-08).** M3 requires an image hash reproducible on a second
+  machine. Their build carries a list of things that break that, each of
+  which cost somebody a failed diff:
+
+  - `BR2_REPRODUCIBLE=y`, then `SOURCE_DATE_EPOCH=1 PYTHONHASHSEED=0`
+    with `compileall --invalidation-mode=checked-hash` for every `.pyc`.
+  - `mkfs.vfat --invariant -i ba5eba11` and a fixed partition
+    `label-id`, because both default to something derived from the clock.
+  - `touch -d` a fixed timestamp across every boot file.
+  - Sorted shell globbing instead of copying a directory, because
+    "mcopy doesn't copy directories deterministically" (their comment).
+  - **Deleting files that record the BUILD HOST rather than the target.**
+    Two of them: Python's `_sysconfigdata`, which embeds the configure
+    triplet, and `libstdc++`, whose `.text` differs between an x86_64 and
+    an aarch64 build host because GCC 13.3 orders two spill slots in
+    `from_chars` differently. Nothing in their image links against it, so
+    they remove it.
+
+  That last one is the shape of trap that a first attempt at a
+  reproducible build always hits and never predicts: the artefact is
+  byte-identical everywhere except one library nothing uses.
 - **A-13: bigger display in v1 (Ben, second pass).** Target is the
   SeedSigner-Plus-class 2.4" ILI9341 at 320×240 (driver vendored from
   SeedSigner at `hw/vendor/ili9341.py`; the 3.5" ILI9486 is named in
@@ -66,13 +142,13 @@
   modes, in order of purity: (1) **private descriptor via static QR** — pure
   Core, self-describing (path + script type + checksum), no shim, no
   hardcoded derivation; (2) **xprv via static QR or text** — pure Core,
-  Corky applies BIP84/86; (3) **BIP39 words / SeedQR** — the shim path,
+  Core Signer applies BIP84/86; (3) **BIP39 words / SeedQR** — the shim path,
   default, because the world's backups (including Ben's) are steel word
   plates. Both new formats fit a single static QR (~112 / ~150 chars) and
   base58check makes a bad scan fail loudly. Stated trade-offs: descriptor
   backups are print/engrave media, not stampable words; no BIP39-style
   passphrase layer on a raw xprv (the QR IS the wallet — say so on screen).
-  Strategic note: mode 1 makes Corky the first signer with a shim-free,
+  Strategic note: mode 1 makes Core Signer the first signer with a shim-free,
   fully Core-native path; candidate default for onboarding fresh wallets.
 
 - **A-15: primary board is now the CM4 (Ben, 2026-08-17, fourth pass).**
@@ -98,7 +174,7 @@
 
 - **A-15c (2026-09-02): the control surface, as built (Ben).** A-15's
   "4-button primary scheme" belonged to the Pimoroni Display HAT Mini,
-  which A-13b/A-15b retired. Every board Corky targets carries a 5-way
+  which A-13b/A-15b retired. Every board Core Signer targets carries a 5-way
   joystick plus three keys: the SeedSigner+ hat on the CM4 build, and the
   WaveShare 1.3" hat on the Zero 2 W pocket build. The UI uses all eight
   controls; a 4-button-only scheme is explicitly NOT a requirement, and
@@ -121,14 +197,14 @@
   COMMUNITY project with the Bitcoin Design community — it sits in the
   bitcoin-core GitHub org but is NOT an official Bitcoin Core team product;
   record it accurately. Use: mine its transaction-review and send-flow
-  patterns (Bitcoin Design Guide lineage, MIT) when refining Corky's review
-  screens, so Corky's UI reads like the Core family. Watch item: if it grows
+  patterns (Bitcoin Design Guide lineage, MIT) when refining Core Signer's review
+  screens, so Core Signer's UI reads like the Core family. Watch item: if it grows
   PSBT-by-QR/file coordinator flows, the full stack becomes Core node +
-  Core App coordinator + Corky signer. Context (2026-08-18): Ava Chow put
+  Core App coordinator + Core Signer signer. Context (2026-08-18): Ava Chow put
   HWI into minimal maintenance (bitcoin-core/HWI#850, successor: BHWI by
-  Wizardsardine) — Corky has no HWI dependency (PSBT-native by design),
+  Wizardsardine) — Core Signer has no HWI dependency (PSBT-native by design),
   and any future Core App hardware-wallet story runs through BHWI while
-  its Corky story would be plain PSBT.
+  its Core Signer story would be plain PSBT.
 
 - **A-18: codex32 as a first-class Core-native mode (Ben, 2026-08-18 —
   "stop worrying about frontrunning").** Fractal's work is a SeedSigner
@@ -150,7 +226,8 @@
      zero-re-exposure integrity check is the standard's killer property
      and costs us one function.
 
-  Implementation rules mirror the shim: a `codex32.py` module,
+  Implementation rules would mirror the shim: a `codex32.py` module
+  (post-v1, not written; the name is the proposal, not a file),
   **stdlib-only, no EC math** (BCH checksum + GF(32) share arithmetic is
   table math), frozen once written, tested against BIP93's own vectors
   AND cross-checked against BlockstreamResearch/codex32's reference
@@ -164,7 +241,7 @@
   modules is one more than one; mitigation is the same vector discipline
   plus cross-implementation checks, and GF(32) table math is closer to
   the shim's hashing than to real cryptography. (c) Seed-splitting is
-  explicitly discouraged by one side of a live expert debate — Corky
+  explicitly discouraged by one side of a live expert debate — Core Signer
   IMPLEMENTS the standard and takes no position; split is a capability
   behind an explicit menu choice, with the debate acknowledged on
   screen ("some practitioners discourage splitting seeds; shares are
@@ -187,22 +264,112 @@
 - **A-19: opt-in seed generation with Bitcoin Core's RNG (Ben, 2026-08-20).**
   Ben's call, in his words: Core is the most trusted software there is, so
   if you are going to trust any RNG, trust that one. Against other devices
-  this is a selling point, because their RNG is a vendor's and Corky's is
+  this is a selling point, because their RNG is a vendor's and Core Signer's is
   the reference implementation's.
 
   **What it changes.** A-9 froze v1 with *no on-device seed generation*, and
   A-18 recorded that no device RNG exists or is used. Both stand for
-  CORKY's own code: Corky still contains no RNG, calls no `os.urandom` and
+  CORESIGNER's own code: Core Signer still contains no RNG, calls no `os.urandom` and
   imports neither `random` nor `secrets` (tests/test_generate.py enforces
   this statically and at import time). What is now permitted is asking
   BITCOIN CORE for entropy, on an explicit opt-in path, in a v1.1 tool that
   sits beside the codex32 tools rather than in the seed-entry flow.
 
+  **A-19a: the tradeoff screen and the forced backup are removed (Ben,
+  2026-09-05).** New key showed three lines about what software entropy
+  can and cannot prove, and made you press A to accept them. It then walked
+  you into a backup you could not leave without losing the key.
+
+  Ben's call, in his words: *"when I click generate key it should just
+  generate"*, and *"Backup key or file should be an option after the key is
+  created, as it is, why is that in the flow?"*
+
+  The tradeoff is not deleted, it is moved. The README states it under
+  Core's entropy, at a length a 320x240 panel cannot carry, and it now
+  states it more accurately than the screen did: the software IS auditable,
+  because Core's builds are reproducible and the hashes are pinned in
+  `image/PINS`; the silicon and the kernel under it are not. The screen's
+  version said software entropy could not be audited at all, which was
+  wrong, and it was wrong in a place with no room to correct it.
+
+  **A-19b: Core's RNG is the only way to create a key here, and the
+  "cards and dice by default" claim was false (Ben, 2026-09-05).** He
+  asked whether Core's RNG is safe as a default over dice, and noted that
+  cards cannot work because this is BIP32 and not BIP39. Checking it
+  showed the README had been claiming a path that does not exist.
+
+  Dice cannot make a key on this device. Turning rolls into a key is BIP32
+  master derivation, HMAC-SHA512 over the entropy, and two things would
+  have to be true for that: Core Signer would need a cryptographic primitive,
+  which A-22 forbids and `tests/test_integrity.py` enforces; or Core would
+  need an RPC that accepts raw entropy, and `sethdseed` went with the
+  legacy wallets. Confirmed against v31.1 on the board: `help sethdseed`
+  answers "unknown command". `tests/test_generate.py` now watches that
+  fact, so if a future Core reopens the door the dice question reopens
+  with it.
+
+  So the choice is Core generating the key here, or bringing an xprv made
+  on another machine and trusting that machine's RNG. The README said
+  "cards and dice by default" in one place and "out of scope for v1:
+  dice entropy" sixty lines below. The second was right. Both are now
+  consistent, and the entropy is stated in numbers rather than adjectives:
+  the kernel credits the SoC generator a full bit per bit and it delivers
+  about 950,000 credited bits per second against a 256-bit requirement.
+  The honest caveat is concentration, not scarcity: fewer independent
+  sources sit behind those bits than on a laptop (map R2, R4).
+
+  A-19's substance is untouched: `createwallet` makes the master key with
+  Core's own RNG, Core Signer signs with that same wallet, and no line of ours
+  sits between the two. Backup key is a row on the key's own menu, taken
+  when the user wants it. `tests/e2e_session.py` session G asserts the
+  backup menu does not follow generation at once.
+
+- **A-24: the private key leaves on paper only (Ben, 2026-09-05).** The
+  encrypted file backup, its passphrase, and restore-from-file are cut.
+  Backup key goes straight to the pages. Ben's words: "you can and should
+  only be able to export by writing it down on paper, no encryption
+  needed."
+
+  **What it removes.** `signer.backup_encrypted`, `restore_encrypted`,
+  `find_backups`; `main._backup_file`, `_ask_passphrase`,
+  `_confirm_no_passphrase`, `_key_from_file`, `_backup`;
+  `screens.encrypt_menu`, `no_passphrase_warning`, `restore_menu`,
+  `backup_menu`, `BACKUP_OPTIONS`, `fingerprint_of_backup`, and the
+  passphrase alphabet. 179 lines of shipped code, and Restore from file
+  leaves the KEYS screen with it.
+
+  **What it keeps.** The file channel, for PUBLIC data only: the
+  watch-only wallet file Bitcoin Core needs because it reads no QR, and
+  PSBTs. The worst a hostile card can do there is hand Core something Core
+  rejects.
+
+  **Why.** This board has one card slot and that card is the boot device,
+  so an encrypted backup would go either to the boot card, which A-23 kept
+  hedging about, or to a USB stick. Drawing the line at the key rather
+  than the medium means a key that was never written to a medium cannot be
+  taken off one. It also deletes the third of the three moments Core Signer sees
+  a key: the backup passphrase on its way to `encryptwallet`. Two moments
+  remain, in and to paper.
+
+  **One correction to the premise, recorded because it changes the
+  reasoning and not the decision.** USB host already works on the Zero 2 W
+  (`otg_mode=1`, `dwc2` in host mode, gadget modules blacklisted), so a
+  stick was available and this was a choice rather than a hardware
+  constraint. Ben confirmed it after hearing that.
+
+  **The cost, stated plainly.** The only backup is now 111 handwritten
+  characters. No second copy, no encryption at rest, and the only way back
+  is scanning or typing them. That is what makes the paper check built the
+  same day load-bearing rather than a nicety.
+
+  **Where the removed code goes.** butlers-playground, this repo's fork,
+  which is 26 commits behind. Map ticket N4 carries that job.
+
 - **A-20: the outbound QR carries fountain parts (Ben, 2026-09-03).**
   `psbt_to_frames` used to return exactly one pure cycle, which the display
-  looped. That is fragile in a way only Sparrow's decoder shows. Corky renders
+  looped. That is fragile in a way only Sparrow's decoder shows. Core Signer renders
   244-character UR frames as a 49x49 QR; with the quiet zone that is 53
-  modules, and the 320x240 panel allows `box_size = 240 // 53 = 4`. So Corky
+  modules, and the 320x240 panel allows `box_size = 240 // 53 = 4`. So Core Signer
   renders at exactly 4.0 pixels per module and cannot go higher without fewer
   modules. Measured over 375 frames
   (`tests/m1/outbound_margin.py`), three of them (0.8%) cannot be decoded by
@@ -228,13 +395,13 @@
   you.
 
   Reasoning and rejected options in full:
-  `docs/wayfinder/m1-qr-without-optics/tickets/09-zxing-cannot-read-some-frames.md`.
+  the m1-qr-without-optics map, ticket 09 (archived; see docs/wayfinder/README.md).
 
   **Mechanism (revised same day at Ben's direction: EXACTLY as a Core
   wallet, no shaping).** `signer.generate_wallet()` calls `createwallet`,
   so Core generates the master key with its own `GetStrongRandBytes` and
   derives its standard descriptor set — key generation identical to any
-  Core wallet's birth. Corky then USES that very wallet to sign; nothing
+  Core wallet's birth. Core Signer then USES that very wallet to sign; nothing
   is re-derived. The backup shown to the user is Core's own MASTER XPRV,
   read verbatim from the descriptors Core wrote (`listdescriptors true`
   stores the depth-0 master in every descriptor; empirically verified,
@@ -250,21 +417,36 @@
   directly. No split option either, for the same reason; guardianship of
   an xprv backup is Kaitiaki's lane. Restore is the existing xprv entry
   mode (pure Core), which recreates the BIP84/86 active set — the only
-  paths Corky ever hands out addresses from (verified by test: restored
+  paths Core Signer ever hands out addresses from (verified by test: restored
   wallet derives identical BIP84 addresses). Core cannot produce BIP39
-  words and Corky will not invent them; the screen says so.
+  words and Core Signer will not invent them; the screen says so.
 
-  **Verification.** The user confirms transcription, then Corky re-derives
+  **Verification.** The user confirms transcription, then Core Signer re-derives
   the wallet from the codex32 strings it displayed (shares are recombined,
   not read back out of memory) and shows the first receive address, so the
   transcription can be checked later against any wallet restored from it.
 
-  **The honest caveat, on the record.** Software entropy is unverifiable by
-  inspection. A compromised RNG is undetectable from its output, and that
-  is as true of Core's as of anyone's; trusting it is a choice about the
-  counterparty, not a verification win. Cards and dice remain the
-  documented default and the only path where the unauditable step happens
-  in your own hands. A-19 adds an option; it does not move the recommendation.
+  **The honest caveat, corrected 2026-09-05 (Ben).** The first version of
+  this said software entropy is "unverifiable by inspection", and that was
+  too broad. Two questions, one answer each.
+
+  The CODE is verifiable. Core's builds are reproducible, so the binary
+  corresponds to source anyone can read. Eleven signatures on the 31.1
+  hashes were checked out of band on 2026-09-03, from a different host to
+  the one serving the binary. The hash is pinned in image/PINS and
+  provisioning refuses to install without it. The M3 release image gets the
+  same treatment for the whole card.
+
+  The INPUTS and the OUTPUT are not. The kernel's getrandom, the processor
+  and the SoC's hardware generator all sit outside Core's reproducible
+  build, and verified code fed by a compromised kernel produces exactly the
+  bytes it is given. Randomness also cannot be checked after the fact: a
+  backdoored generator and a good one produce output that looks the same,
+  which is the point of a backdoored one.
+
+  So cards and dice do not fix the software, which was never the weak part.
+  They move the unpredictable step out of the machine, into something you
+  watch happen. A-19 adds an option; it does not move the recommendation.
 
 
 - **A-21: M0 ran on the board (2026-09-03). The verdict depends on the PSBT's
@@ -285,7 +467,7 @@
 
   **What the gate then measured, all at 250 inputs on `gpu_mem=32`:**
 
-  | funding shape | PSBT | bitcoind | Corky | headroom | |
+  | funding shape | PSBT | bitcoind | Core Signer | headroom | |
   |---|---|---|---|---|---|
   | 2 outputs per tx (ordinary payments) | 92KB | 65MB | 21MB | **226MB** | PASS |
   | 100 outputs per tx (exchange batches) | 980KB | 126MB | 64MB | 97MB | FAIL |
@@ -295,7 +477,7 @@
   size per input: 378 bytes against 2778, a factor of 7.3.
 
   **Two things this settles.** The 100MB rule was written as though bitcoind
-  were the only consumer; Corky's own process is a third of the total at the
+  were the only consumer; Core Signer's own process is a third of the total at the
   worst case, and nobody had measured it. And the old harness hard-coded 100
   outputs per funding transaction to fund quickly, which accidentally modelled
   consolidating exchange batch withdrawals. That is a real worst case, so it
@@ -307,11 +489,94 @@
   batch-withdrawal inputs.** A-15 already ruled that M0's 512MB question gates
   the pocket build and not v1, and v1 is the CM4 with 2GB.
 
-  Reducing Corky's 64MB is the one fix that makes Corky better rather than the
+  Reducing Core Signer's 64MB is the one fix that makes Core Signer better rather than the
   board bigger: `describe_psbt` parses the full `decodepsbt` document, which
   at the worst case expands 25,000 output objects it never reads, when all it
   needs is `tx.vout` and the fee. Not attempted. Its own ticket.
 
+- **A-22: Core Signer forks. `main` is a pure signer with ZERO code that touches
+  secrets (Ben, 2026-09-04).**
+
+  JW Weatherman, told Core Signer is a tiny UI over Core: *"your only focus should
+  be in minimizing any additional code you add. As soon as code review is
+  required you are half way to a rug product... If you can add no code at all
+  that's the ideal. Next best is the tiniest UI needed and absolutely nothing
+  more."*
+
+  Measured the same day. Layer 1, the code that transforms secret material,
+  was 342 lines: the 50-line BIP39 shim, 254 lines of codex32 and 38 of
+  SeedQR. **codex32 alone was 74% of it.**
+
+  **The decision: `main` carries none of them. Layer 1 becomes zero lines.**
+
+  Keys reach Core three ways, and Core Signer transforms nothing on any of them:
+  Core generates one with its own RNG (A-19), or the user supplies an **xprv**
+  or a **descriptor**, typed or scanned, which Core Signer passes to
+  `importdescriptors` as an opaque string. Bitcoin Core has no BIP39 and never
+  will, so the shim existed only to accept a seed phrase.
+
+  The claim stops being "read one page" and becomes **"there is nothing to
+  read"**.
+
+  **The cost, stated plainly.** Core Signer cannot accept a 12 or 24 word seed
+  phrase. Nobody can bring the words from an existing hardware wallet. A
+  backup is Core's 111-character master xprv, not words, and it cannot be
+  split. Ben took that cost knowingly: the purity is the product.
+
+  **The lab branch** carries everything removed, plus everything the
+  key-provenance map decided, plus silent payments later. It is for Ben and
+  the few who read code and want the device to do more than generate and sign.
+  It merges `main` forward, so every signer fix reaches it and no fix is ever
+  applied twice.
+
+  Consequences for this plan: A-18's codex32 backup, A-14's SeedQR input mode
+  and the BIP39 word-entry flow all move to the lab. M4's "metal-backed seed"
+  means an xprv on metal for `main`.
+
+- **A-23: the file backup is Core's own, and the SD-card rule is amended
+  (Ben, 2026-09-04).** Charted with the e2e-before-testers map
+  (the e2e-before-testers map (archived; see docs/wayfinder/README.md)), where each decision has a
+  ticket.
+
+  **The file backup.** `encryptwallet` then `backupwallet`, Core's own
+  commands, give a passphrase-encrypted wallet file that another Core
+  restores with `restorewallet` and unlocks with `walletpassphrase`. Proven
+  2026-09-04 on two regtest nodes: no plaintext key in the file, spend
+  refused without the passphrase, spend allowed after. Core Signer's part is one
+  passphrase screen and two RPC calls. Ben's condition, met: it is what Core
+  does, so Core Signer's value proposition and line count do not move.
+
+  **The fixed decision "No keys on the SD card, ever" now reads:** Core Signer
+  never writes a key on its own. A backup the user asks for, encrypted by
+  Core with a passphrase the user typed, written to a medium the user names
+  (the USB stick or the boot card, asked every time), is allowed. The
+  README states it plainly.
+
+  **Superseded by A-24 (2026-09-05), one day later.** The encrypted file
+  backup is deleted. The rule went back to being about the KEY rather than
+  the medium: the private key leaves this device on paper and no other
+  way. A-23's reasoning about which medium is safe is kept because it is
+  what A-24 answered, not because any of it is still in force.
+
+  **Also decided in the same session, recorded in the map's tickets:** home
+  becomes SeedSigner's Scan, Key, Tools, Settings, with generation under
+  Tools; Core Signer holds up to five keys at once, one Core wallet per key named
+  by fingerprint, measured at about 3MB each on the Zero 2 W; Scan detects
+  by content; export follows SeedSigner's wallet chooser with a plain
+  descriptor QR, no UR, and a watch-only wallet file for Bitcoin Core;
+  menus use Core's vocabulary (Receiving addresses, not an address
+  explorer). Mainnet only for this map; a network switch is out of scope.
+
+
+  **This repository is the other side of that fork.** A-22 took Layer 1
+  off `pure`; the lab keeps all three modules, and the three capabilities
+  they carry: codex32 (A-18), seed words with their BIP39 passphrase, and
+  SeedQR. The forward merge of 2026-10-16 brought `pure`'s 178 commits
+  here and put those flows back on top of them, so the signer underneath
+  is the same signer. What differs is 354 lines (342 when A-22 measured
+  them, and the count is computed rather than quoted now), and
+  tests/test_integrity.py is where that difference is counted rather than
+  described.
 ## Post-v1 todo / hardening backlog (from the round-2 audit, 2026-08-18)
 
 - **Secret hygiene: xprv-bearing RPC params travel as bitcoin-cli argv**,
@@ -338,13 +603,13 @@
   and hand-verifiable shares allow decades of backup integrity checks
   with zero re-exposure to hardware. Constraint (Westgate): Core does not
   export seeds, so codex32 backup applies to externally-born seeds
-  (cards), which is Corky's model anyway. Momentum, evidence-graded (2026-08-18): Westgate says he is building a
+  (cards), which is Core Signer's model anyway. Momentum, evidence-graded (2026-08-18): Westgate says he is building a
   CLI/GUI and was commissioned by Blockstream for Jade — but Jade firmware
   at master contains ZERO codex32 code; the only repo trace is open issue
   Blockstream/Jade#129 ("Wen codex32?", Apr 2024, Blockstream planning a
   manual-entropy seed product) with Westgate's own Sep 2024 comment asking
   why no PR exists. Treat as intention, not commitment; no urgency for
-  Corky's timing. The Fractal deferral is about his SeedSigner UI;
+  Core Signer's timing. The Fractal deferral is about his SeedSigner UI;
   supporting the published BIP itself is a separable later decision
   (Ben's call).
 - Anti-exfil: not implementable via Core's RPC today (no nonce hook in

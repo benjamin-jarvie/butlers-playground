@@ -15,9 +15,10 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "corky"))
+sys.path.insert(0, str(ROOT / "coresigner"))
 sys.path.insert(0, str(ROOT / "shim"))
-import main as corky_main  # noqa: E402
+import main as coresigner_main  # noqa: E402
+import qrsource  # noqa: E402
 import screens  # noqa: E402
 from bip39_shim import load_wordlist  # noqa: E402
 
@@ -60,8 +61,8 @@ class ScriptedButtons:
 def named_screens(display):
     """Paint names instead of images, so a session's screen order is
     assertable without rendering."""
-    for name in ("home", "seed_menu", "result", "busy", "review",
-                 "tools_menu", "seed_length", "settings_menu"):
+    for name in ("home", "keys_menu", "result", "busy", "review",
+                 "settings_menu", "tools_menu", "seed_length"):
         setattr(screens, name,
                 (lambda n: lambda *a, **k: n)(name))
     return display
@@ -75,11 +76,11 @@ class FakeRpc:
 
 
 # --- boot splash: the signing unit must activate the ordered unit ---------
-service = (ROOT / "image" / "corky.service").read_text()
-if "Wants=corky-splash.service" not in service:
-    bad("corky.service orders after the splash but does not activate it")
+service = (ROOT / "image" / "coresigner.service").read_text()
+if "Wants=coresigner-splash.service" not in service:
+    bad("coresigner.service orders after the splash but does not activate it")
 else:
-    ok("enabling corky.service also activates the brand splash")
+    ok("enabling coresigner.service also activates the brand splash")
 
 
 # --- boot splash: the dedicated entrypoint paints exactly one frame -------
@@ -93,72 +94,126 @@ class SplashDisplay:
         painted.append(image)
 
 
-import splash as corky_splash  # noqa: E402  (dedicated boot entrypoint)
+import splash as coresigner_splash  # noqa: E402  (dedicated boot entrypoint)
 
 real_argv = sys.argv
-real_dev_display = corky_splash.hal.DevDisplay
+real_dev_display = coresigner_splash.hal.DevDisplay
 real_splash = screens.splash
 try:
     sys.argv = ["splash.py", "--dev", "--frames-dir", "unused"]
-    corky_splash.hal.DevDisplay = lambda _path: SplashDisplay()
-    screens.splash = lambda w, h: ("splash", w, h)
-    corky_splash.main()
+    coresigner_splash.hal.DevDisplay = lambda _path: SplashDisplay()
+    # build and dev are what the frame now says about the card
+    # (2026-09-23), and a stub that ignores them would let the
+    # entrypoint stop passing them without anything noticing.
+    screens.splash = lambda w, h, build=None, dev=(): (
+        "splash", w, h, build, tuple(dev))
+    coresigner_splash.main()
 finally:
     sys.argv = real_argv
-    corky_splash.hal.DevDisplay = real_dev_display
+    coresigner_splash.hal.DevDisplay = real_dev_display
     screens.splash = real_splash
 
-if painted != [("splash", 320, 240)]:
+# The dev reasons come from the real filesystem this suite runs on, so
+# they are whatever the developer's machine is; the check is that the
+# entrypoint passes BOTH arguments and paints one frame.
+if len(painted) != 1 or painted[0][:3] != ("splash", 320, 240):
     bad(f"the splash entrypoint painted unexpected frames: {painted}")
+elif len(painted[0]) != 5:
+    bad("the splash entrypoint no longer says what the card is")
 else:
     ok("the splash entrypoint paints one branded frame and exits")
 
 
 # --- backup strings paginate in order and C aborts immediately ------------
 backup_calls = []
-real_backup_screen = screens.codex32_share_display
+real_backup_screen = screens.backup_page
 try:
-    screens.codex32_share_display = (
-        lambda _w, _h, page_text, _index, _total, page, pages:
+    screens.backup_page = (
+        lambda _w, _h, page_text, _label, page, pages, actions_sel=0,
+        offer_check=True:
         backup_calls.append((page_text, page, pages)) or "backup")
-    buttons = ScriptedButtons("aac")
-    session = corky_main.Session(RecordingDisplay(), buttons, FakeRpc())
-    completed = session._show_backup("x" * 97, 1, 1)
+    buttons = ScriptedButtons("aac")   # page, page, abort
+    session = coresigner_main.Session(RecordingDisplay(), buttons, FakeRpc())
+    completed = session._show_backup("x" * 97, "KEY  D2B7E45C")
     abort_calls = list(backup_calls)
 
     backup_calls.clear()
     success_buttons = ScriptedButtons("aa")
-    success_session = corky_main.Session(
+    success_session = coresigner_main.Session(
         RecordingDisplay(), success_buttons, FakeRpc())
-    succeeded = success_session._show_backup("y" * 49, 1, 1)
+    succeeded = success_session._show_backup("y" * 49, "KEY  D2B7E45C")
     success_calls = list(backup_calls)
+
+    # The last page's bar is live: CHECK IT is pre-selected and DONE is
+    # one press LEFT of it (Ben, 2026-09-19: the safe choice belongs
+    # under the thumb, and leaving without checking is the risky one).
+    # Both must reach the caller.
+    backup_calls.clear()
+    check_session = coresigner_main.Session(
+        RecordingDisplay(), ScriptedButtons("ala"), FakeRpc())
+    chose_done = check_session._show_backup("z" * 49, "KEY  D2B7E45C")
+
+    # DOWN turns the page everywhere else, so it turns the page here too
+    # (057d910). On the LAST page there is nowhere to turn to, and it must
+    # not fall through into DONE: the same gesture would then finish the
+    # backup, and the user meant "next page". The `continue` that stops
+    # that had no assertion behind it until 2026-09-08.
+    backup_calls.clear()
+    down_session = coresigner_main.Session(
+        RecordingDisplay(), ScriptedButtons("dda"), FakeRpc())
+    down_result = down_session._show_backup("w" * 49, "KEY  D2B7E45C")
+    down_calls = list(backup_calls)
 finally:
-    screens.codex32_share_display = real_backup_screen
+    screens.backup_page = real_backup_screen
 
 expected_abort = [("x" * 48, 0, 3), ("x" * 48, 1, 3), ("x", 2, 3)]
 expected_success = [("y" * 48, 0, 2), ("y", 1, 2)]
-if (completed or abort_calls != expected_abort or buttons.reads != 3 or
-        not succeeded or success_calls != expected_success or
-        success_buttons.reads != 2):
+if (completed is not None or abort_calls != expected_abort
+        or buttons.reads != 3
+        or succeeded != "check" or success_calls != expected_success
+        or success_buttons.reads != 2):
     bad("backup pagination/abort drifted: "
         f"abort={abort_calls}, success={success_calls}")
 else:
     ok("backup strings paginate in order, complete, and abort immediately")
 
+if succeeded != "check":
+    bad("A on the last backup page did not choose CHECK IT. The safe "
+        "choice has to be the one already under the thumb.")
+elif chose_done != "done":
+    bad(f"LEFT then A on the last backup page returned {chose_done!r}, "
+        "so DONE is not reachable beside CHECK IT")
+else:
+    ok("CHECK IT is the default, and LEFT reaches DONE without checking")
+
+# "d" turns page 0 -> 1, then "d" on the last page redraws it, then "a"
+# finishes. Four paints for three presses: pages 0, 1, and 1 again.
+expected_down = [("w" * 48, 0, 2), ("w", 1, 2), ("w", 1, 2)]
+if down_result != "check":
+    bad(f"DOWN then A on the last backup page returned {down_result!r}")
+elif down_calls != expected_down:
+    bad(f"DOWN on the LAST backup page did not simply redraw it: "
+        f"{down_calls}")
+else:
+    ok("DOWN turns the page, and on the last page redraws it rather than "
+       "finishing the backup")
+
 
 # --- D6: a failing seed mode must hold its message ------------------------
 _real = {n: getattr(screens, n) for n in
-         ("home", "seed_menu", "result", "busy", "review", "tools_menu",
-          "seed_length", "settings_menu")}
+         ("home", "keys_menu", "result", "busy", "review",
+          "settings_menu", "tools_menu", "seed_length")}
 display = named_screens(RecordingDisplay())
-# A opens load key (top-left tile), six D then A -> "Scan SeedQR" (index 6
-# of the eight load-key modes), which raises like the camera stub does; ONE
-# key dismisses the error, then D,R,A,A goes home -> settings -> power off.
-# If the error is not held, the dismissing A re-opens the menu instead.
-buttons = ScriptedButtons(["a"] + ["d"] * 6 + ["a", "a"] +
-                          ["d", "r", "a", "a"])
-session = corky_main.Session(display, buttons, FakeRpc())
-session.qr = corky_main.CameraQrSource()
+# R,A opens the Keys tile. The list is flat now (Ben, 2026-09-05), so D
+# moves from New key to Scan a key, A picks it, A accepts the warning, and
+# the scan fails because this machine has no camera. ONE key dismisses the
+# error. C leaves Keys for home, then D,R,A,A goes to settings and powers
+# off. If the error is not held, the dismissing A falls through and the
+# script runs out.
+buttons = ScriptedButtons(["r", "a"] + ["d", "a"] + ["a"] + ["a"] +
+                          ["c"] + ["d", "r", "a", "a"])
+session = coresigner_main.Session(display, buttons, FakeRpc())
+session.qr = qrsource.CameraQrSource()
 raised = None
 try:
     session.state_home()
@@ -170,17 +225,52 @@ for n, f in _real.items():
 painted = display.painted
 if raised is not None:
     bad(f"the error was not held; the session ran off its script: {raised}")
-elif not (painted[0] == "home" and "busy" in painted
+# The failure is SHOWN, and the screen after it is the one level UP from
+# the menu that failed, not the menu itself. Before 2026-09-05 that was
+# home, because Load a key was reached straight from the tile; now Keys
+# sits between them, so Keys is where a failed load returns you.
+elif not (painted[0] == "home"
           and "result" in painted
-          and painted[painted.index("result") + 1] == "home"
-          and painted.count("seed_menu") >= 1):
-    bad(f"unexpected screen order after a failing seed mode: {painted}")
+          and painted[painted.index("result") + 1] == "keys_menu"
+          and painted.count("keys_menu") >= 2):
+    bad(f"unexpected screen order after a failing key mode: {painted}")
 else:
-    ok("a failing seed mode holds its error until a key is pressed")
+    ok("a failing key mode holds its error, then returns to Keys")
+
+# --- the typed key screen must not be a dead end --------------------------
+# On the board 2026-09-05 the back button did nothing on an empty box,
+# because B deletes a character and there was nothing to delete. It was
+# found on the passphrase screen, which went with the encrypted backup
+# (A-24); the same rule binds the one typed screen that is left, where a
+# private key goes in.
+class Recorder:
+    width, height = 320, 240
+
+    def __init__(self):
+        self.painted = []
+
+    def show(self, image, sensitive=False):
+        self.painted.append(image)
+
+
+def entry(keys):
+    sess = coresigner_main.Session(Recorder(), ScriptedButtons(keys), FakeRpc())
+    return sess._text_entry("MASTER  PRIVATE  KEY", "xprv", secret=True)
+
+
+if entry(["b"]) is None:
+    ok("B on an empty typed key goes back instead of doing nothing")
+else:
+    bad("B on an empty typed key did not go back")
+
+if entry(["a", "b", "b"]) is None:
+    ok("B deletes what is there, then goes back when there is nothing")
+else:
+    bad("B did not fall through to back once the buffer was empty")
 
 # --- D9: the sign button explains its refusal -----------------------------
-img_quiet = _real["review"](320, 240, [("bc1q", 1.0)], 0.0001, 1)
-img_loud = _real["review"](320, 240, [("bc1q", 1.0)], 0.0001, 1,
+img_quiet = _real["review"](320, 240, [("bc1q", 1.0)], 0.0001)
+img_loud = _real["review"](320, 240, [("bc1q", 1.0)], 0.0001,
                            unseen_pages=True)
 if img_quiet.tobytes() == img_loud.tobytes():
     bad("review() renders the same frame whether or not SIGN was refused")
@@ -188,15 +278,99 @@ else:
     ok("review() says why it will not sign yet")
 
 # --- entry cost budgets ---------------------------------------------------
+# A-22: the word and codex32 entry budgets went with their grids. What is
+# left is the base58 grid, which types a private key in and types one back
+# to check a paper backup. TESTING.md rule 6: these are measurements, taken
+# by replaying the real navigation rules, and they fail when the cost
+# drifts.
+#
+# Up and down cross a page boundary (main._grid_move). Before they did, a
+# page turn meant walking to the end of the 32-cell strip first, and base58
+# is 58 characters over two pages. That one rule is most of the difference
+# below, and without it Ben's paper check would have cost 1,444 presses,
+# which is not a check anyone performs.
+sys.path.insert(0, str(ROOT / "tests"))
+from e2e_keys import (check_keys, commit_presses, entry_keys,  # noqa: E402
+                      text_keys)
+
+KEY = ("tprv8ZgxMBicQKsPe5YMU9gHen4Ez3ApihUfykaqUorj9t6FDqy3nP6eoXiAo2ss"
+       "vpAjoLroQxHqr3R5nE3a5dU3DHTjTgJDd7zrbniJr6nrCzd")
+
+# Both flows as a person meets them: the 16-character master prefix is
+# already on the screen, and the check is one pass over the whole key
+# rather than three pages each of which had to be perfect before the
+# next would open (both 2026-09-19).
+typing_in = len(entry_keys(KEY))
+checking = len(check_keys(KEY))
+
+for label, got, budget in (
+        ("typing a 111-character private key in", typing_in, 640),
+        ("checking a written backup, all 111 characters", checking, 650)):
+    if got <= budget:
+        ok(f"{label}: {got} presses (budget {budget})")
+    else:
+        bad(f"{label}: {got} presses, over the {budget} budget")
+
+# The grid is one MODE at a time now and never a paged alphabet (map
+# typing, T2), so there is no page boundary left to cross. What has to
+# hold instead is that the d-pad reaches every cell from every cell, and
+# that DOWN from the bottom row is the ONE move that does not move,
+# because that is how the loop leaves the grid for ABORT and CHECK.
+_cells = screens.mode_cells(screens.modes("xprv")[0][1])
+_cols = screens.GRID_COLS
+_last = len(_cells) - 1
+_bottom = (_last // _cols) * _cols
+
+_stuck = [i for i in range(len(_cells))
+          for k in "udlr"
+          if coresigner_main._cell_move(k, _cells, i) == i
+          and not (k == "d" and i >= _bottom)]
+if _stuck:
+    bad(f"cells {sorted(set(_stuck))} have a d-pad press that does "
+        "nothing, and a press that does nothing reads as off the grid")
+elif coresigner_main._cell_move("d", _cells, _last) != _last:
+    bad("DOWN from the last cell moved instead of leaving for the bar")
+elif coresigner_main._cell_move("l", _cells, _bottom) != _bottom - 1:
+    bad("LEFT from the start of the last row does not reach the "
+        "character before it")
+elif coresigner_main._cell_move("d", _cells, _bottom - 1) != _last:
+    bad("DOWN from the long row above a ragged one does not land on "
+        "the end of it")
+elif coresigner_main._cell_move("u", _cells, 0) != _bottom:
+    bad("UP from the top row does not come round to the bottom")
+else:
+    ok("every cell moves on every press, except DOWN off the bottom")
+
+# Every cell is REACHABLE from every other, which is the property the
+# four checks above are each one example of.
+def _reach(start):
+    seen, queue = {start}, [start]
+    while queue:
+        at = queue.pop(0)
+        for k in "udlr":
+            nxt = coresigner_main._cell_move(k, _cells, at)
+            if nxt not in seen:
+                seen.add(nxt)
+                queue.append(nxt)
+    return seen
+
+
+if all(len(_reach(i)) == len(_cells) for i in range(len(_cells))):
+    ok(f"and all {len(_cells)} cells reach all {len(_cells)} others")
+else:
+    bad("some cell cannot reach the whole grid with the d-pad")
+
+
+# ---- Layer 1's grid: the 8x4 letters that type a word -------------------
+# A-22 took the word budget off `pure` with the grid it measured. This
+# repository still has that grid, so it still has the budget: the model
+# below replays Session._collect_words exactly, and the numbers it
+# produces are what pay for the words path being there at all.
 WORDLIST = load_wordlist()
 
 
 def word_presses(word):
     """Replays Session._collect_words as it is TODAY: an 8x4 letter grid.
-
-    The dial this used to model died with audit item D4. A cost model that
-    measures a UI the device no longer has reports a confident, meaningless
-    number, which TESTING.md rule 4 exists to prevent.
 
     Per letter: u/d moves a row (wrapping mod 32), l/r moves a column, A
     types it. The word is taken with the centre press once it heads the
@@ -214,6 +388,8 @@ def word_presses(word):
         total += min(rows, 4 - rows) + min(cols, 8 - cols) + 1
         cur = t
         prefix += nxt
+
+
 
 
 import random  # noqa: E402  (test-only; never imported by device code)
@@ -248,14 +424,21 @@ class Rec:
 
 def signed_outcome(keys):
     d = Rec()
-    sess = corky_main.Session(d, ScriptedButtons(list(keys)), FakeRpc())
+    sess = coresigner_main.Session(d, ScriptedButtons(list(keys)), FakeRpc())
     return sess._state_signed("x.psbt written")
 
 
-cases = [("a", corky_main.SIGN_AGAIN, "A on the default choice signs another"),
-         ("ra", corky_main.POWER_OFF, "R then A powers off"),
-         ("rla", corky_main.SIGN_AGAIN, "R then L returns to sign another"),
-         ("c", corky_main.POWER_OFF, "C on the result powers off")]
+# The second choice was POWER OFF until 2026-09-24, and so was C. Ben
+# cut both: "it's not intuitive and they can just pull the cable if they
+# want to turn it off or do it from home". Powering down lives in
+# Settings, where a person goes looking for it. C now does nothing here,
+# which is what every other screen's unused button does, so it is
+# checked by the ScriptedButtons script running out rather than by a
+# return value.
+cases = [("a", coresigner_main.SIGN_AGAIN, "A on the default choice signs another"),
+         ("ra", coresigner_main.TO_HOME, "R then A goes home"),
+         ("rla", coresigner_main.SIGN_AGAIN, "R then L returns to sign another"),
+         ("ba", coresigner_main.TO_HOME, "B leaves the screen, as it does everywhere")]
 for keys, want, why in cases:
     got = signed_outcome(keys)
     if got != want:
@@ -263,9 +446,16 @@ for keys, want, why in cases:
     else:
         ok(f"_state_signed: {why}")
 
+try:
+    signed_outcome("c")
+except AssertionError:
+    ok("_state_signed: C no longer halts the device from the result screen")
+else:
+    bad("C still leaves the result screen; POWER OFF was cut from it")
+
 
 def passphrase_outcome(keys):
-    sess = corky_main.Session(Rec(), ScriptedButtons(list(keys)), FakeRpc())
+    sess = coresigner_main.Session(Rec(), ScriptedButtons(list(keys)), FakeRpc())
     return sess._ask_passphrase()
 
 
@@ -280,31 +470,21 @@ if passphrase_outcome("b") != "":
 else:
     ok("_ask_passphrase: B declines")
 
-# YES opens the grid; typing z then centre-press returns it.
-zi = screens.charset_pages("passphrase")
-zpage = next(i for i, pg in enumerate(zi) if "z" in pg)
-keys = ["r", "a"]                       # NO -> YES, then open the grid
-cur, page = 0, 0
-while page < zpage:                     # r past the end turns the page
-    while cur < len(zi[page]) - 1:
-        keys.append("r"); cur += 1
-    keys.append("r"); page += 1; cur = 0
-ti = zi[zpage].index("z")
-while cur + 8 <= ti:
-    keys.append("d"); cur = min(len(zi[page]) - 1, cur + 8)
-while cur < ti:
-    keys.append("r"); cur += 1
-keys.append("a")                        # type it
-keys.append("p")                        # centre press = done
+# YES opens the grid, and typing one character returns it. The walk is
+# tests/e2e_keys.text_keys, which replays main's own grid rules, because
+# this test used to hand-walk a paged charset that no longer exists.
+keys = ["r", "a"] + list(text_keys("passphrase", "z"))
 if passphrase_outcome(keys) != "z":
     bad("_ask_passphrase: YES then typing 'z' did not return 'z'")
 else:
     ok("_ask_passphrase: YES opens the grid and returns what was typed")
 
 # CANCEL on the grid must give no passphrase, not the characters typed.
-cancel_keys = ["r", "a", "a", "c", "a"]   # YES, type one char, C -> bar, A
-# the bar lands on DONE, so move to CANCEL first: C then L then A
-cancel_keys = ["r", "a", "a", "c", "l", "a"]
+# The walk to the bar is main's own: DOWN from the bottom row leaves the
+# grid, and C is the MODE button here rather than a way out, which is
+# what this test used to press.
+_walk = commit_presses("passphrase", 0, 0)      # cell 0 -> bar -> DONE
+cancel_keys = ["r", "a", "a"] + list(_walk[:-1]) + ["l", "a"]
 if passphrase_outcome(cancel_keys) != "":
     bad("_ask_passphrase: CANCEL on the grid kept the typed characters")
 else:

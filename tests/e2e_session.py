@@ -11,13 +11,17 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "corky"))
+sys.path.insert(0, str(ROOT / "coresigner"))
 sys.path.insert(0, str(ROOT / "shim"))
 import signer  # noqa: E402
 import qrchannel  # noqa: E402
 from bip39_shim import mnemonic_to_xprv  # noqa: E402
 
 MNEMONIC = "abandon " * 11 + "about"
+# The same key, as an xprv. `pure`'s sessions take this form and this
+# repository derives it from the words rather than pasting a second
+# constant that could drift out of step with them.
+XPRV = mnemonic_to_xprv(MNEMONIC, mainnet=False)
 # Button script for typing the canonical mnemonic (see main._seed_words):
 # abandon: append 'a', open candidates, accept first  -> "ara"
 # about:   'a', +1 to 'b', append, +14 to 'o', append, candidates, accept
@@ -35,31 +39,13 @@ def word_keys(word):
     return "".join(out)
 
 
-# 11x abandon + about, typed on the grid.
+# 11x abandon + about, typed on the grid. Session F drives the backup
+# tool in process, so it needs the presses rather than a wallet.
 WORDS_SCRIPT = word_keys("abandon") * 11 + word_keys("about")
-
-BECH32 = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
-
-
-def grid_keys(payload):
-    """Button script that types payload on the 4x8 grid (cursor starts 0)."""
-    cur, out = 0, []
-    for ch in payload:
-        tgt = BECH32.index(ch)
-        d = (tgt - cur) % 32
-        out.append("d" * (d // 8) + "r" * (d % 8) + "a")
-        cur = tgt
-    return "".join(out)
-
-
-def _pub(rpc, desc):
-    """The watch-only form of a private descriptor, checksummed by Core."""
-    info = rpc.call("getdescriptorinfo", desc, stdin=True)
-    return info["descriptor"]
 
 
 def run_device(datadir, script, frames, stick=None, qr_key=None, qr_psbt=None):
-    cmd = [sys.executable, str(ROOT / "corky" / "main.py"), "--dev",
+    cmd = [sys.executable, str(ROOT / "coresigner" / "main.py"), "--dev",
            f"--datadir={datadir}", "--chain=regtest", f"--script={script}",
            f"--frames-dir={frames}"]
     if stick:
@@ -72,12 +58,12 @@ def run_device(datadir, script, frames, stick=None, qr_key=None, qr_psbt=None):
 
 
 def main():
-    datadir = tempfile.mkdtemp(prefix="corky-sess-")
+    datadir = tempfile.mkdtemp(prefix="coresigner-sess-")
     import random as _rnd
     _port = _rnd.randint(20000, 60000)
     (Path(datadir) / "bitcoin.conf").write_text(
         "regtest=1\n[regtest]\nrpcport=%d\n" % _port)
-    work = Path(tempfile.mkdtemp(prefix="corky-sess-work-"))
+    work = Path(tempfile.mkdtemp(prefix="coresigner-sess-work-"))
     daemon = subprocess.Popen(
         ["bitcoind", "-regtest", f"-datadir={datadir}", "-listen=0",
          "-fallbackfee=0.0001", "-server=1", "-debuglogfile=0"],
@@ -91,8 +77,8 @@ def main():
             except RuntimeError:
                 time.sleep(0.5)
 
-        # Coordinator: watch wallet from Corky's xpubs, funded
-        signer.open_session(rpc, MNEMONIC)
+        # Coordinator: watch wallet from Core Signer's xpubs, funded
+        signer.open_session_xprv(rpc, XPRV)
         pubs = signer.public_descriptors(rpc)
         signer.close_session(rpc)
         rpc.call("createwallet", "watch", True, True, "", False, True)
@@ -122,42 +108,27 @@ def main():
         def _has(d, png):
             return any(p.read_bytes() == png for p in _frames(d))
 
-        # ---- Session A: typed word entry + stick sign ----
-        stick = work / "stickA"; stick.mkdir()
-        (stick / "hui.psbt").write_bytes(base64.b64decode(fund_psbt(2.0)))
-        script = ("a" + "ddddddda" + "a" + WORDS_SCRIPT + "a" + "a")
-        # load key, type-words(idx7), 12 words, no passphrase, sign
-        r = run_device(datadir, script + "ra", work / "framesA", stick=stick)
-        assert r.returncode == 0, f"A failed:\n{r.stderr}"
-        signed = stick / "hui-signed.psbt"
-        assert signed.exists(), "A: signed file missing"
-        final = rpc.call("finalizepsbt",
-                         base64.b64encode(signed.read_bytes()).decode())
-        txid = rpc.call("sendrawtransaction", final["hex"])
-        rpc.call("generatetoaddress", 1, addr)
-        assert rpc.call("gettransaction", txid, wallet="watch")["confirmations"] >= 1
-        assert _has(work / "framesA", _render(scr.busy, "signing in Core…")), \
-            "A: signing busy screen missing"
-        assert _frames(work / "framesA")[-1].read_bytes() == _render(
-            scr.result, ok=True, detail="hui-signed.psbt written",
-            actions_sel=1), \
-            "A: final frame is not the success screen with POWER OFF chosen"
-        print(f"ok   A: typed 12 words on the keypad -> stick sign -> confirmed {txid[:12]}…")
+        def _where(d, png):
+            """Every frame number that drew this screen, in order shown."""
+            return [i for i, p in enumerate(_frames(d))
+                    if p.read_bytes() == png]
+
 
         # ---- Session B: xprv via QR + PSBT in AND out via QR ----
         xprv_file = work / "key.txt"
         xprv_file.write_text(mnemonic_to_xprv(MNEMONIC, mainnet=False))
         frames_file = work / "psbt_frames.txt"
         frames_file.write_text("\n".join(qrchannel.psbt_to_frames(fund_psbt(1.0))))
-        r = run_device(datadir, "a" + "da" + "a" + "a" + "ra", work / "framesB",
+        r = run_device(datadir, "ra" + "da" + "a" + "bb" + "a" + "a" + "ra", work / "framesB",
                        qr_key=xprv_file, qr_psbt=frames_file)
-        assert r.returncode == 0, f"B failed:\n{r.stderr}"
+        assert r.returncode == 0, f"B failed rc={r.returncode}:\n{r.stderr[-1200:]}"
         shots = sorted((work / "framesB").glob("frame-*.png"))
         assert len(shots) > 6, "B: expected QR output frames on screen"
         lastb = shots[-1].read_bytes()
         assert any(lastb == _render(scr.result, ok=True,
                                     detail=f"shown as {n} QR frames",
-                                    actions_sel=1)
+                                    actions_sel=1, label="SIGNED",
+                                    note="ready to send")
                    for n in range(1, 80)), "B: final frame not a QR-out result"
         print(f"ok   B: xprv QR (warning screen shown) -> PSBT via QR -> signed QR out ({len(shots)} frames)")
 
@@ -170,7 +141,8 @@ def main():
                         [{"txid": utxo["txid"], "vout": utxo["vout"]}],
                         [{rpc.call("getnewaddress", wallet="watch"): 1.0}])
         (stickc / "bad.psbt").write_bytes(base64.b64decode(bare))
-        r = run_device(datadir, "a" + "dddddda" + "a" + "a" + "draa", work / "framesC",
+        r = run_device(datadir, "ra" + "ddddd" + "a" + "a" + "draa",
+                       work / "framesC",
                        stick=stickc, qr_key=seedqr_file)
         assert r.returncode == 0, f"C failed:\n{r.stderr}"
         assert not (stickc / "bad-signed.psbt").exists(), "C: refused PSBT was signed!"
@@ -178,7 +150,6 @@ def main():
         # the refusal screen (ok=False). Kills visual-lie mutants (e.g.
         # ok False->True showing success on a refusal) that no logic
         # assertion can see. PIL renders are deterministic.
-        sys.path.insert(0, str(ROOT / "corky"))
         import screens as scr
         import io
         buf = io.BytesIO()
@@ -204,8 +175,8 @@ def main():
         seedqr_file2.write_text("0000" * 11 + "0003")
         # 5 outputs = 3 pages at two per page: forced 'a' walks pages 2
         # and 3, the fourth 'a' signs
-        r = run_device(datadir, "a" + "dddddda" + "a" + "aaa" + "ra", work / "framesD",
-                       stick=stickd, qr_key=seedqr_file2)
+        r = run_device(datadir, "ra" + "da" + "a" + "bb" + "a" + "aaa" + "ra", work / "framesD",
+                       stick=stickd, qr_key=key_file2)
         assert r.returncode == 0, f"D failed:\n{r.stderr}"
         assert (stickd / "many-signed.psbt").exists(), "D: signed file missing"
         # Negative: a SINGLE 'a' at review (one page still unseen) must NOT
@@ -220,7 +191,7 @@ def main():
         sq3 = work / "seedqr3.txt"; sq3.write_text("0000" * 11 + "0003")
         # load key, seedqr, review: ONE 'a' (force-advance only) then 'c'
         # rejects; 'a' dismisses the rejection, then settings -> power off.
-        r = run_device(datadir, "a" + "dddddda" + "a" + "ac" + "a" + "draa",
+        r = run_device(datadir, "ra" + "da" + "a" + "bb" + "a" + "ac" + "a" + "draa",
                        work / "framesD2",
                        stick=stickd2, qr_key=sq3)
         assert not (stickd2 / "many-signed.psbt").exists(), \
@@ -245,8 +216,8 @@ def main():
         (stickd3 / "many.psbt").write_bytes(base64.b64decode(many3))
         sq4 = work / "seedqr4.txt"; sq4.write_text("0000" * 11 + "0003")
         # review: d,u,d,d touch pages 1,0,1,2 -> all three seen via nav
-        r = run_device(datadir, "a" + "dddddda" + "a" + "dudda" + "ra", work / "framesD3",
-                       stick=stickd3, qr_key=sq4)
+        r = run_device(datadir, "ra" + "da" + "a" + "bb" + "a" + "dudda" + "ra", work / "framesD3",
+                       stick=stickd3, qr_key=key_sq4)
         assert r.returncode == 0, f"D3 failed:\n{r.stderr}"
         assert (stickd3 / "many-signed.psbt").exists(), "D3: nav-sign missing"
         # wraparound: u from page0 lands on page2 ((0-1)%3), u again on 1
@@ -255,15 +226,14 @@ def main():
                          [{a: v} for a, v in dests.items()],
                          0, {"fee_rate": 10}, True, wallet="watch")["psbt"]
         (stickd4 / "many.psbt").write_bytes(base64.b64decode(many4))
-        sq5 = work / "seedqr5.txt"; sq5.write_text("0000" * 11 + "0003")
-        r = run_device(datadir, "a" + "dddddda" + "a" + "uua" + "ra", work / "framesD4",
-                       stick=stickd4, qr_key=sq5)
+        key_sq5 = work / "key5.txt"; key_sq5.write_text(XPRV)
+        r = run_device(datadir, "ra" + "da" + "a" + "bb" + "a" + "uua" + "ra", work / "framesD4",
+                       stick=stickd4, qr_key=key_sq5)
         assert r.returncode == 0, f"D4 failed:\n{r.stderr}"
         assert (stickd4 / "many-signed.psbt").exists(), "D4: wraparound broken"
         print("ok   D3/D4: paging navigation u/d + wraparound exercised")
 
         # ---- Session E: codex32 shares (scan) open the wallet ----
-        sys.path.insert(0, str(ROOT / "corky"))
         import codex32 as c32
         seed = bytes(range(32))
         ident = "cqr0"
@@ -317,9 +287,9 @@ def main():
                       [{rpc.call("getnewaddress", wallet="watch"): 0.1}],
                       0, {"fee_rate": 10}, True, wallet="watch")["psbt"]
         (stickr / "p3.psbt").write_bytes(base64.b64decode(p3))
-        sqr = work / "sq_r3.txt"; sqr.write_text("0000" * 11 + "0003")
-        r = run_device(datadir, "a" + "dddddda" + "a" + "a" + "ra", work / "framesR3",
-                       stick=stickr, qr_key=sqr)
+        key_sqr = work / "sq_r3.txt"; key_sqr.write_text(XPRV)
+        r = run_device(datadir, "ra" + "da" + "a" + "bb" + "a" + "a" + "ra", work / "framesR3",
+                       stick=stickr, qr_key=key_sqr)
         assert r.returncode == 0, f"R3 failed:\n{r.stderr}"
         assert (stickr / "p3-signed.psbt").exists(), "R3: 2-out page count wrong"
         print("ok   R3: 2-output PSBT reviewed as one page and signed")
@@ -339,7 +309,7 @@ def main():
         # (hw/HARDWARE.md), so the two need different tails.
         for abkey, tail in (("b", "c" + "draa"), ("c", "draa")):
             r = run_device(datadir,
-                           "a" + "dddddda" + "a" + "a" + abkey + tail,
+                           "ra" + "da" + "a" + "bb" + "a" + "a" + abkey + tail,
                            work / ("framesI" + abkey),
                            stick=emptystick, qr_key=sqi, qr_psbt=part)
             assert r.returncode == 0, f"I({abkey}) failed:\n{r.stderr}"
@@ -354,21 +324,28 @@ def main():
         print("ok   I: partial QR makes progress; b/c abort the load loop")
 
         # ---- Session J: PSBT this wallet cannot complete -> refusal ----
+        # A-22: the watch wallet used to be a by-product of the codex32
+        # session, which moved to the lab. J makes its own, so it stands
+        # alone: a funded wallet whose keys Core Signer does not hold.
         stickj = work / "stickJ"; stickj.mkdir()
         foreign = rpc.call("walletcreatefundedpsbt", [],
                            [{rpc.call("getnewaddress", wallet="watchE"): 0.5}],
                            0, {"fee_rate": 10}, True, wallet="watchE")["psbt"]
         (stickj / "alien.psbt").write_bytes(base64.b64decode(foreign))
-        sqj = work / "sq_j.txt"; sqj.write_text("0000" * 11 + "0003")
-        r = run_device(datadir, "a" + "dddddda" + "a" + "a" + "a" + "draa", work / "framesJ",
-                       stick=stickj, qr_key=sqj)
+        key_sqj = work / "key_j.txt"; key_sqj.write_text(XPRV)
+        foreign_xfp = signer.master_fingerprint(rpc, wallet="foreignJ")
+        # Ticket 03: the transaction names its key, so the refusal comes
+        # BEFORE review and names the fingerprint it wants. One key
+        # dismisses it, then settings, power off.
+        r = run_device(datadir, "ra" + "da" + "a" + "bb" + "a" + "a" + "draa", work / "framesJ",
+                       stick=stickj, qr_key=key_sqj)
         assert r.returncode == 0, f"J failed:\n{r.stderr}"
         assert not (stickj / "alien-signed.psbt").exists(), "J: signed foreign PSBT!"
         # Returns to home after the refusal (D7); the screen must still be
         # rendered byte-identically somewhere in the run.
         assert _has(work / "framesJ", _render(
             scr.result, ok=False,
-            detail="wallet cannot complete this PSBT")), \
+            detail=f"no loaded key owns it; wants {foreign_xfp}")), \
             "J: the exact cannot-complete screen was never shown"
         print("ok   J: foreign PSBT -> cannot-complete refusal, golden-verified")
 
@@ -450,48 +427,55 @@ def main():
             "ms12cjmldc2gc59wenneyk4mmnh5frzucltpp0v47tu5kgvx8t037g5gtrw0mas44xqqx9x2qpf04uwpa7dmyfgu2y2amnm3n8f9m6zf64pajl6fsmhh3hwtuud85kc",
         ]
         import hal
-        import main as corky_main
+        import main as coresigner_main
         rec = []
-        orig_sd = scr.codex32_share_display
-        # A 127-char codex32 string is three screenfuls now (share_pages),
-        # so the recorder captures every page and the scripts acknowledge
-        # each one.
-        scr.codex32_share_display = (
-            lambda w, h, share, index, total, page=0, pages=1:
-            (rec.append((share, index, total)) or orig_sd(
-                w, h, share, index, total, page=page, pages=pages)))
+        orig_sd = scr.backup_page
+        # A 127-char codex32 string is several screenfuls, so the recorder
+        # captures every page and the scripts acknowledge each one. The
+        # share screen is main's own backup pager since the forward merge
+        # of 2026-10-16, so this records what that draws.
+        scr.backup_page = (
+            lambda w, h, chunk, label, page=0, pages=1, actions_sel=1,
+            offer_check=True:
+            (rec.append((chunk, label)) or orig_sd(
+                w, h, chunk, label, page=page, pages=pages,
+                actions_sel=actions_sel, offer_check=offer_check)))
 
         def _pages(text):
-            return scr.share_pages(text.upper())
+            return scr.text_pages(text.upper())
 
-        def _recorded(text, index, total):
-            return [(p, index, total) for p in _pages(text)]
+        def _recorded(text, label):
+            return [(p, label) for p in _pages(text)]
 
         PER = len(_pages(F_SECRET))
         try:
             def backup_run(script, tag):
                 d = work / ("framesF" + tag)
-                sess = corky_main.Session(hal.DevDisplay(d),
+                sess = coresigner_main.Session(hal.DevDisplay(d),
                                           hal.DevButtons(script), rpc=None)
                 sess._tool_backup()
                 return d
             rec.clear()
             fd = backup_run("a" + WORDS_SCRIPT + "a" + "a" + "a" * PER + "a", "1")
-            assert rec == _recorded(F_SECRET, 1, 1), f"F1 drifted: {rec}"
+            assert rec == _recorded(F_SECRET, "CODEX32  SECRET"), \
+                f"F1 drifted: {rec}"
             rec.clear()
             fd = backup_run("a" + WORDS_SCRIPT + "a" + "da" + "a" * (3 * PER) + "a",
                             "2")
             assert rec == [entry for i, sh in enumerate(F_SHARES)
-                           for entry in _recorded(sh, i + 1, 3)], \
+                           for entry in _recorded(
+                               sh, f"SHARE  {i + 1} / 3")], \
                 f"F2 drifted: {rec}"
             assert _frames(fd)[-1].read_bytes() == _render(
                 scr.result, ok=True,
-                detail="transcribed; kit worksheets own paper"), \
+                detail="Transcribed; the kit worksheets own paper"), \
                 "F2: final frame is not the exact backup-done screen"
             for i, sh in enumerate(F_SHARES):
                 for n, page in enumerate(_pages(sh)):
-                    assert not _has(fd, _render(orig_sd, page, i + 1, 3,
-                                                page=n, pages=PER)), \
+                    assert not _has(fd, _render(
+                            orig_sd, page, f"SHARE  {i + 1} / 3",
+                            page=n, pages=PER, actions_sel=0,
+                            offer_check=False)), \
                         "F2: SENSITIVE share screen leaked to a dev frame"
             rec.clear()
             backup_run("a" + WORDS_SCRIPT + "a" + "b", "3")  # abort at split choice
@@ -501,29 +485,29 @@ def main():
             assert len(rec) == 1, "F4: C after share 1 did not stop the flow"
             assert not _has(fd, _render(
                 scr.result, ok=True,
-                detail="transcribed; kit worksheets own paper")), \
+                detail="Transcribed; the kit worksheets own paper")), \
                 "F4: aborted backup still claimed success"
         finally:
-            scr.codex32_share_display = orig_sd
+            scr.backup_page = orig_sd
         # unit pins: threshold parsing and mainnet/testnet xprv selection
-        th = corky_main.Session._threshold_of
+        th = coresigner_main.Session._threshold_of
         assert th(FROZEN_SHARES[0]) == 2, "threshold: k=2 share"
         assert th(H_SECRET) == 0, "threshold: k=0 secret"
         assert th("ms11xxxx") == 0, "threshold: '1' is invalid"
         assert th("msxaxxxx") == 0, "threshold: non-digit"
         import types as _types
         cap = []
-        orig_open = corky_main.signer.open_session_xprv
-        corky_main.signer.open_session_xprv = lambda rpc, x: cap.append(x)
+        orig_open = coresigner_main.signer.open_session_xprv
+        coresigner_main.signer.open_session_xprv = lambda rpc, x: cap.append(x)
         try:
             for chain, prefix in (("main", "xprv"), ("regtest", "tprv")):
-                sess = corky_main.Session(
+                sess = coresigner_main.Session(
                     hal.DevDisplay(work / ("framesFx" + chain)),
                     hal.DevButtons(""), _types.SimpleNamespace(chain=chain))
                 assert sess._codex32_open([H_SECRET]) is True
                 assert cap[-1].startswith(prefix), f"{chain}: wrong xprv net"
         finally:
-            corky_main.signer.open_session_xprv = orig_open
+            coresigner_main.signer.open_session_xprv = orig_open
         print("ok   F: backup tool pinned to frozen vectors; threshold + "
               "network unit pins")
 
@@ -536,23 +520,30 @@ def main():
                            for _ in range(6)],
                           0, {"fee_rate": 10}, True, wallet="watch")["psbt"]
             (st / "n.psbt").write_bytes(base64.b64decode(pn))
-            signer.open_session(rpc, MNEMONIC)
+            wname = signer.open_session_xprv(rpc, XPRV)
             info = signer.describe_psbt(rpc, pn)
+            # The device now names the wallet it is signing for on this
+            # screen (map M9, from M1 decision 2), so the expected render
+            # must be given what the device gives it or every frame
+            # differs by one line.
+            ours = next((k.xfp for k in signer.loaded_keys(rpc)
+                         if k.name == wname), None)
             signer.close_session(rpc)
             outs = [(o["address"], o["amount_btc"]) for o in info["outputs"]]
             assert (len(outs) + 1) // 2 == 4, "N: expected exactly 4 pages"
             # Each page has two renders now: the plain one, and the one
             # that says why SIGN was refused (unseen pages remain).
             pages = [[_render(scr.review, outs, info["fee_btc"],
-                              info["input_count"],
                               input_total_btc=info["input_total_btc"],
-                              page=i, unseen_pages=refused)
+                              page=i, unseen_pages=refused,
+                              quorum=info["quorum"],
+                              cosigners=info["cosigners"], ours=ours)
                       for refused in (False, True)]
                      for i in range(4)]
-            sq = work / ("sq_n" + tag + ".txt")
-            sq.write_text("0000" * 11 + "0003")
-            r = run_device(datadir, "a" + "dddddda" + "a" + navkeys + "ra",
-                           work / ("framesN" + tag), stick=st, qr_key=sq)
+            key_sq = work / ("key_n" + tag + ".txt")
+            key_sq.write_text(XPRV)
+            r = run_device(datadir, "ra" + "da" + "a" + "bb" + "a" + navkeys + "ra",
+                           work / ("framesN" + tag), stick=st, qr_key=key_sq)
             assert r.returncode == 0, f"N{tag} failed:\n{r.stderr}"
             assert (st / "n-signed.psbt").exists(), f"N{tag}: sign missing"
             seq = []
@@ -585,60 +576,71 @@ def main():
 
         import screens as _scr
 
-        def text_keys(charset, want):
-            """Keys that type `want` on the paged text grid, computed by
-            walking the same rules main._text_entry uses."""
-            pages = _scr.charset_pages(charset)
-            page, cur, out = 0, 0, []
-            for ch in want:
-                tp = next(i for i, pg in enumerate(pages) if ch in pg)
-                ti = pages[tp].index(ch)
-                while page < tp:                  # r past the end pages on
-                    n = len(pages[page])
-                    while cur < n - 1:
-                        out.append("r"); cur += 1
-                    out.append("r"); page += 1; cur = 0
-                while page > tp:                  # l past the start pages back
-                    while cur > 0:
-                        out.append("l"); cur -= 1
-                    out.append("l"); page -= 1; cur = len(pages[page]) - 1
-                n = len(pages[page])
-                while cur + 8 <= ti:
-                    out.append("d"); cur = min(n - 1, cur + 8)
-                while cur - 8 >= ti:
-                    out.append("u"); cur = max(0, cur - 8)
-                while cur < ti:
-                    out.append("r"); cur += 1
-                while cur > ti:
-                    out.append("l"); cur -= 1
-                out.append("a")
-            out.append("p")                            # centre press = done
-            return "".join(out)
-
-        pass_keys = text_keys("passphrase", "z")
-        addrs = {}
-        for tag, pkeys in (("none", "a"), ("with", "ra" + pass_keys)):
-            fp = work / ("framesP" + tag)
-            script = ("a" + "ddddddda" + "a" + WORDS_SCRIPT + pkeys
-                      + "b" + "draa")   # b aborts the load loop, then power off
-            r = run_device(datadir, script, fp)
-            assert r.returncode == 0, f"P({tag}) failed:\n{r.stderr}"
-            addrs[tag] = rpc.call("listwalletdir")
-        # The wallet is deleted at teardown, so compare the derived address
-        # through the shim instead: same words, different passphrase.
-        from bip39_shim import mnemonic_to_xprv as _mx
-        assert _mx(MNEMONIC, "", mainnet=False) != _mx(MNEMONIC, "z",
-                                                       mainnet=False), \
-            "P: passphrase does not change the derived key"
-        print("ok   P: passphrase entry runs end to end and changes the key")
-
-        # ---- Session T: typed xprv and typed descriptor (S3) ----
+        # ---- Session T: a real xprv typed on the grid (S3) ----
         # The audit's S3 asked for key material that can be TYPED, for a
         # build with no camera. Both modes were shipped once with a charset
         # that could not express them (no 'B', no brackets), so these type a
         # REAL xprv and a REAL descriptor character by character.
-        stickt = word = None
-        typed_xprv = mnemonic_to_xprv(MNEMONIC, mainnet=False)
+        import screens as _scr          # was imported by a session A-22 removed
+        def text_keys(charset, want):
+            """Keys that type `want`, then take the bar's action.
+
+            Re-states the grid's rules from the SCREEN's shape, never
+            read out of main (TESTING.md rule 2). One mode at a time
+            since map typing T2, so a character in another mode costs a
+            C first, and L and R wrap inside a row.
+            """
+            import main as _main
+            runs = _scr.modes(charset)
+            mode, cur, out = 0, 0, []
+
+            def route(cells, start, target):
+                # The ROUTE is searched, never written down. The MOVES
+                # are _cell_move's, because what one press does is the
+                # device's behaviour and not the grid's shape; a copy
+                # here walked routes the device would not walk once the
+                # wrap changed (2026-09-18). test_ui_cost pins what
+                # _cell_move itself has to do.
+                seen, queue = {start: ""}, [start]
+                while queue:
+                    at = queue.pop(0)
+                    if at == target:
+                        return seen[at]
+                    for k in "udlr":
+                        nxt = _main._cell_move(k, cells, at)
+                        if nxt not in seen:
+                            seen[nxt] = seen[at] + k
+                            queue.append(nxt)
+                raise AssertionError("no route")
+
+            for ch in want:
+                target_mode = next(m for m, (_l, run) in enumerate(runs)
+                                   if ch in run)
+                while mode != target_mode:
+                    # _same_cell, like _cell_move below. Where the
+                    # cursor lands after a toggle cannot be re-derived
+                    # from the screen's shape, because it is not about
+                    # shape: it is main's rule, and a copy of it here
+                    # walked the grid from a cell the device had
+                    # already left when the rule changed (2026-09-18).
+                    here = _scr.mode_cells(runs[mode][1])
+                    mode = (mode + 1) % len(runs)
+                    cur = _main._same_cell(
+                        here, cur, _scr.mode_cells(runs[mode][1]))
+                    out.append("c")
+                cells = _scr.mode_cells(runs[mode][1])
+                target = cells.index(ch)
+                out.append(route(cells, cur, target) + "a")
+                cur = target
+            cells = _scr.mode_cells(runs[mode][1])
+            downs = 0
+            while _main._cell_move("d", cells, cur) != cur:
+                cur = _main._cell_move("d", cells, cur)
+                downs += 1
+            out.append("d" * (downs + 1) + "a")
+            return "".join(out)
+
+        typed_xprv = XPRV
         assert not {c for c in typed_xprv
                     if c not in _scr.CHARSETS["xprv"]}, \
             "T: a real xprv contains characters the xprv grid cannot type"
@@ -647,92 +649,69 @@ def main():
                       [{rpc.call("getnewaddress", wallet="watch"): 0.3}],
                       0, {"fee_rate": 10}, True, wallet="watch")["psbt"]
         (stickt / "typed.psbt").write_bytes(base64.b64decode(pt))
-        # load key -> "Type xprv" is index 3 -> type it -> sign -> power off
+        # Keys -> Type private key (third row) -> type it -> back out to home ->
+        # Sign tile -> sign -> POWER OFF.
         r = run_device(datadir,
-                       "a" + "ddda" + text_keys("xprv", typed_xprv)
-                       + "a" + "ra",   # sign, then POWER OFF
+                       # The grid opens holding the master prefix, so
+                       # only what follows it is typed (Ben, 2026-09-19).
+                       "ra" + "dda" + text_keys("xprv", typed_xprv[16:])
+                       + "bb" + "a" + "a" + "ra",
                        work / "framesT", stick=stickt)
         assert r.returncode == 0, f"T failed:\n{r.stderr}"
         assert (stickt / "typed-signed.psbt").exists(), \
             "T: typed xprv did not open a key that could sign"
         print("ok   T: a real xprv typed on the grid opens the key and signs")
 
-        # The descriptor grid must express a real Core PRIVATE descriptor,
-        # so ask Core for one from a throwaway wallet that holds keys.
-        rpc.call("createwallet", "desccheck")
-        _d = rpc.call("listdescriptors", True,
-                      wallet="desccheck")["descriptors"]
-        _missing = {c for desc in _d for c in desc["desc"]
-                    if c not in _scr.CHARSETS["descriptor"]}
-        assert not _missing, \
-            f"T: real Core descriptors need characters the grid lacks: {_missing}"
+        # The typed-descriptor checks and session T2 lived here. Type
+        # descriptor left the Keys screen on 2026-09-05: a descriptor
+        # lives as a printed QR, not as words on steel, so Scan a key
+        # covers it, and nobody types 111 characters on a five-way pad to
+        # avoid holding up a card. The path is gone, so the session that
+        # proved it is gone too, rather than testing nothing.
 
-        # ...and typing one must actually open a key that signs. This is the
-        # end-to-end shape whose absence let the original S3 charset bug
-        # ship: a charset assertion alone would have passed it too.
-        rpc.call("unloadwallet", "desccheck")
-        # Corky's OWN private wpkh receive descriptor, in Core's own form
-        # (origin in brackets, checksummed), read straight back out of a
-        # session opened from the test mnemonic.
-        signer.open_session(rpc, MNEMONIC)
-        _privs = rpc.call("listdescriptors", True,
-                          wallet=signer.WALLET)["descriptors"]
-        _priv = next(d["desc"] for d in _privs
-                     if d["desc"].startswith("wpkh(")
-                     and not d.get("internal"))
-        signer.close_session(rpc)
-        assert not {c for c in _priv
-                    if c not in _scr.CHARSETS["descriptor"]}, \
-            "T2: Corky's own private descriptor is not typeable on the grid"
 
-        # Fund the first address of that exact descriptor, so the typed
-        # descriptor alone is enough to sign.
-        # The public form keeps the hardened origin, so only the private
-        # descriptor can derive. stdin keeps it out of the process list.
-        _a0 = rpc.call("deriveaddresses", _priv, [0, 0], stdin=True)[0]
-        rpc.call("generatetoaddress", 101, _a0)
-        _utxo = next(u for u in rpc.call("listunspent", 1, 9999, [_a0],
-                                         wallet="watch")
-                     if u["spendable"] or True)
-        stickt2 = work / "stickT2"; stickt2.mkdir()
-        _p2 = rpc.call("walletcreatefundedpsbt",
-                       [{"txid": _utxo["txid"], "vout": _utxo["vout"]}],
-                       [{rpc.call("getnewaddress", wallet="watch"): 1.0}],
-                       0, {"fee_rate": 10, "add_inputs": False}, True,
-                       wallet="watch")["psbt"]
-        (stickt2 / "desc.psbt").write_bytes(base64.b64decode(_p2))
-        # load key -> "Type descriptor" is index 2 -> type it -> sign
-        r = run_device(datadir,
-                       "a" + "dda" + text_keys("descriptor", _priv)
-                       + "a" + "ra",
-                       work / "framesT2", stick=stickt2)
-        assert r.returncode == 0, f"T2 failed:\n{r.stderr}"
-        assert (stickt2 / "desc-signed.psbt").exists(), \
-            "T2: a typed descriptor did not open a key that could sign"
-        print("ok   T2: a real Core descriptor typed on the grid opens a "
-              "key and signs")
-        print("ok   T: the descriptor grid can express a real Core descriptor")
-
-        # ---- Session G: exact-Core generation from the tools menu (A-19) --
-        # home selected=0 = generate key, a = select, a = accept the
-        # tradeoff, then one a per screenful of the master xprv (111 chars
-        # paginates into three), a = leave the verify screen, b = abort the
-        # PSBT load loop the generated key drops us into.
+        # ---- Session G: exact-Core generation from the Keys screen (A-19) --
+        # New key generates and stops. No tradeoff screen, and no backup
+        # you have to walk through to keep the key (Ben, 2026-09-05:
+        # "when I click generate key it should just generate"). The paper
+        # backup is a row on the key's own menu, taken here on purpose,
+        # and there is no chooser in front of it: paper is the only kind
+        # since A-24. The master private key is 111 characters and
+        # paginates into three.
         fg = work / "framesG"
         xprv_pages = 3
         r = run_device(datadir,
-                       "ra" + "a" + "a" * xprv_pages + "a" + "b" + "draa",
-                       fg)   # home->key generation(TR), accept, pages, verify, abort load
+                       "ra" + "a"                 # Keys, New key (first row)
+                       # BY LABEL. This was "dda", which was right only
+                       # while Backup was the third row; it moved to the
+                       # top on 2026-09-11 so a fresh key opens on it.
+                       + "d" * [lab for lab, _n, _k in
+                                scr.KEY_MENU_OPTIONS].index("Backup key")
+                       + "a"
+                       # One press per page, then LEFT to DONE. CHECK IT
+                       # is the pre-selected button on the last page
+                       # since 2026-09-19, so a bare A starts the verify.
+                       + "a" * (xprv_pages - 1) + "la"
+                       + "b" + "b" + "draa",      # key menu -> Keys -> home -> off
+                       fg)
         assert r.returncode == 0, f"G failed:\n{r.stderr}"
-        assert _has(fg, _render(scr.generate_warning)), \
-            "G: the tradeoff screen was never shown before generation"
         assert _has(fg, _render(scr.busy,
                                 "Bitcoin Core is generating your key…")), \
             "G: Core was not asked to create the wallet"
         assert not (rpc.wallet_dir / signer.WALLET).exists(), \
             "G: the session wallet was not deleted at teardown"
-        print("ok   G: Core-RNG generation -> master-xprv backup -> wallet open "
-              "in Core -> both wallets gone at teardown")
+        # The backup was chosen, not forced. Under the flow this replaces,
+        # a backup screen was the very next thing after Core finished. Here
+        # three presses of the key menu separate them, and the frame the
+        # device paints for a backup page is blank, because it is
+        # sensitive, so what is counted is the gap.
+        made = _where(fg, _render(scr.busy,
+                                  "Bitcoin Core is generating your key…"))
+        assert made, "G: the generating screen was never shown"
+        assert len(_frames(fg)) - made[-1] > 4, \
+            "G: nothing happened after generation, so nothing was chosen"
+        print("ok   G: New key generates and stops; the paper backup is "
+              "chosen from the key menu; both wallets gone at teardown")
 
         print("\nSESSION PASS: word-entry(12/24 picker), xprv-QR, SeedQR, "
               "codex32 shares, Core-RNG generation, QR in/out, stick in/out, "

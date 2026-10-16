@@ -1,13 +1,13 @@
 """Shared plumbing for the Sparrow interop suites.
 
-Three scripts here all need the same things: a throwaway regtest node, a Corky
+Three scripts here all need the same things: a throwaway regtest node, a Core Signer
 session, a miner wallet, a way to call the Java tools, and a pass/fail tally.
 They each grew their own copy. This is the one copy.
 
-Nothing in here is Corky's code under test. It is scaffolding.
+Nothing in here is Core Signer's code under test. It is scaffolding.
 """
-import random
 import re
+import socket
 import subprocess
 import sys
 import tempfile
@@ -16,13 +16,16 @@ from decimal import Decimal
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO / "corky"))
-sys.path.insert(0, str(REPO / "shim"))
+sys.path.insert(0, str(REPO / "coresigner"))
 import signer  # noqa: E402
 
 BUILD = Path(__file__).resolve().parent / ".build"
 JAVA_BIN = BUILD / "jdk-25.0.4.1+1/Contents/Home/bin/java"
-MNEMONIC = "abandon " * 11 + "about"
+# A-22 left this repo with no BIP39. This is exactly the key the old
+# "abandon x11 about" mnemonic produced on regtest, so every address, fee
+# and signature this suite asserts is unchanged by the cut.
+XPRV = ("tprv8ZgxMBicQKsPe5YMU9gHen4Ez3ApihUfykaqUorj9t6FDqy3nP6eoXiAo2ssvpA"
+        "joLroQxHqr3R5nE3a5dU3DHTjTgJDd7zrbniJr6nrCzd")
 MINER = "miner"
 
 SCRIPT_TYPES = (("P2WPKH", "wpkh("), ("P2TR", "tr("))
@@ -31,6 +34,28 @@ SCRIPT_TYPES = (("P2WPKH", "wpkh("), ("P2TR", "tr("))
 def require_build():
     if not JAVA_BIN.exists():
         sys.exit("run ./setup.sh first (builds tests/sparrow/.build)")
+
+
+
+def _free_port():
+    """A port the kernel says is free right now.
+
+    This used to be `random.randint(20000, 60000)` with nothing checking
+    whether anything was already listening there. When it collided,
+    bitcoind exited at once, the wait loop below spun for forty seconds,
+    and the suite failed somewhere else entirely with no mention of a
+    port. It is rare and it is real: seen twice across this project's
+    runs, and diagnosed 2026-09-07 only because the runner had started
+    keeping the log.
+
+    Binding to port 0 asks the kernel for one nobody holds. There is a
+    small window between closing this socket and bitcoind opening it, so
+    this makes a collision unlikely rather than impossible; the check
+    above is what makes the remaining case say so.
+    """
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
 
 
 class Java:
@@ -47,6 +72,12 @@ class Java:
         self.utxo_height = 101
 
     def __call__(self, cls, *args, raw=False, tags=("OUT",)):
+        """Run a Java class and collect its tagged lines.
+
+        RETURN TYPE FOLLOWS `tags`: one tag gives the bare list of that
+        tag's lines, and two or more give a dict keyed by tag. Asking for
+        `tags=("OUT",)` therefore gives a list, not a one-key dict.
+        """
         cmd = [str(JAVA_BIN), "--enable-native-access=ALL-UNNAMED",
                f"-Dchain.height={self.chain_height}",
                f"-Dutxo.height={self.utxo_height}"]
@@ -67,11 +98,11 @@ class Java:
 
 
 class Regtest:
-    """A throwaway regtest node with a Corky session and a miner wallet."""
+    """A throwaway regtest node with a Core Signer session and a miner wallet."""
 
     def __init__(self, txindex=True, mine=250):
-        self.datadir = tempfile.mkdtemp(prefix="corky-sparrow-")
-        self.port = random.randint(20000, 60000)
+        self.datadir = tempfile.mkdtemp(prefix="coresigner-sparrow-")
+        self.port = _free_port()
         self.txindex = txindex
         self.mine_blocks = mine
         self.daemon = None
@@ -87,13 +118,24 @@ class Regtest:
                                        stderr=subprocess.DEVNULL)
         self.rpc = signer.Rpc(self.datadir, chain="regtest")
         for _ in range(80):
+            # A node that has ALREADY EXITED will never answer, and
+            # waiting the full forty seconds for it turns a clear failure
+            # into an obscure one further down. The old loop did exactly
+            # that, and the port it could not bind was never named.
+            if self.daemon.poll() is not None:
+                raise RuntimeError(
+                    f"bitcoind exited with {self.daemon.returncode} before "
+                    f"answering on port {self.port}; datadir {self.datadir}")
             try:
                 self.rpc.call("getblockcount")
                 break
             except RuntimeError:
                 time.sleep(0.5)
-        signer.open_session(self.rpc, MNEMONIC)
-        self.pubs = signer.public_descriptors(self.rpc)
+        else:
+            raise RuntimeError(
+                f"bitcoind never answered on port {self.port} in 40s")
+        self.wallet = signer.open_session_xprv(self.rpc, XPRV)
+        self.pubs = signer.public_descriptors(self.rpc, wallet=self.wallet)
         self.rpc.call("createwallet", MINER)
         self.miner_addr = self.rpc.call("getnewaddress", wallet=MINER)
         self.mine(self.mine_blocks)
@@ -117,8 +159,7 @@ class Regtest:
         return self.rpc.call("getnewaddress", wallet=MINER)
 
     def account(self, script_type, branch=0):
-        """(fingerprint, path, xpub) for one of Corky's exported descriptors."""
-        prefix = dict(SCRIPT_TYPES)[script_type]
+        """(fingerprint, path, xpub) for one of Core Signer's exported descriptors."""
         desc = self.descriptor(script_type, branch)
         m = re.search(r"\[([0-9a-f]{8})((?:/\d+h)+)\](\w+)", desc)
         return m.group(1), "m" + m.group(2), m.group(3)
