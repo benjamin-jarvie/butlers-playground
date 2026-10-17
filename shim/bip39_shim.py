@@ -1,7 +1,7 @@
-"""Corky's one piece of non-Core code: BIP39 words -> BIP32 xprv.
+"""Core Signer's one piece of non-Core code: BIP39 words -> BIP32 xprv.
 
 Bitcoin Core does not read seed words and never will. This file is the
-translator. It is the ONLY code in Corky that touches secret material
+translator. It is the ONLY code in Core Signer that touches secret material
 outside Bitcoin Core, so it is held to three rules:
 
   1. Python standard library only. No third-party imports, ever.
@@ -87,6 +87,7 @@ def seed_to_xprv(seed: bytes, mainnet: bool = True) -> str:
 
 
 def mnemonic_to_xprv(mnemonic: str, passphrase: str = "", mainnet: bool = True) -> str:
-    """The one call Corky's front end makes. Validates, then converts."""
+    """The one call Core Signer's front end makes. Validates, then
+    converts."""
     normalized = validate_mnemonic(mnemonic)
     return seed_to_xprv(mnemonic_to_seed(normalized, passphrase), mainnet)

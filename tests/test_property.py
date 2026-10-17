@@ -51,12 +51,12 @@ def entropy_to_mnemonic(entropy: bytes) -> str:
 @settings(max_examples=EXAMPLES, deadline=None)
 def prop_shim_crosscheck(entropy):
     mnemonic = entropy_to_mnemonic(entropy)
-    # Corky's shim.
+    # Core Signer's shim.
     xprv = bip39_shim.mnemonic_to_xprv(mnemonic, mainnet=True)
     # Independent oracle: bip-utils.
     seed = Bip39SeedGenerator(mnemonic).Generate()
     ref_xprv = Bip32Slip10Secp256k1.FromSeed(seed).PrivateKey().ToExtended()
-    assert xprv == ref_xprv, f"xprv mismatch\n corky={xprv}\n ref  ={ref_xprv}"
+    assert xprv == ref_xprv, f"xprv mismatch\n ours={xprv}\n ref ={ref_xprv}"
     # And the shim's own seed matches the oracle's seed.
     assert bip39_shim.mnemonic_to_seed(mnemonic) == seed
 
@@ -865,12 +865,12 @@ def sats_to_btc(sats: int) -> Decimal:
 @settings(max_examples=EXAMPLES, deadline=None)
 def prop_shim_crosscheck(entropy):
     mnemonic = entropy_to_mnemonic(entropy)
-    # Corky's shim.
+    # Core Signer's shim.
     xprv = bip39_shim.mnemonic_to_xprv(mnemonic, mainnet=True)
     # Independent oracle: bip-utils.
     seed = Bip39SeedGenerator(mnemonic).Generate()
     ref_xprv = Bip32Slip10Secp256k1.FromSeed(seed).PrivateKey().ToExtended()
-    assert xprv == ref_xprv, f"xprv mismatch\n corky={xprv}\n ref  ={ref_xprv}"
+    assert xprv == ref_xprv, f"xprv mismatch\n ours={xprv}\n ref ={ref_xprv}"
     # And the shim's own seed matches the oracle's seed.
     assert bip39_shim.mnemonic_to_seed(mnemonic) == seed
 

@@ -1,6 +1,6 @@
 > ## This is the playground, not the signer
 >
-> **The product is [`corky`](https://github.com/benjamin-jarvie/corky).**
+> **The product is [`CoreSigner`](https://github.com/benjamin-jarvie/CoreSigner).**
 > That repository has **zero lines that transform secret material**: no
 > BIP39, no codex32, no SeedQR. Bitcoin Core generates, holds and signs
 > with your key, and nothing of ours computes on it. That is the claim,
@@ -25,14 +25,14 @@
 > it says otherwise. Where a number differs, this repository's own
 > `tests/test_readme_claims.py` computes it from this tree.
 >
-> Fixes flow one way. This repository keeps `corky` as a remote named
-> `pure`, so a signer fix is never applied twice:
+> Fixes flow one way. This repository keeps `CoreSigner` as a remote
+> named `pure`, so a signer fix is never applied twice:
 >
 > ```
 > git fetch pure && git merge pure/main
 > ```
 >
-> **That is safe only from 2026-09-04 onward.** `corky`'s history
+> **That is safe only from 2026-09-04 onward.** `CoreSigner`'s history
 > *contains* the A-22 deletion, so merging it before that point removes
 > codex32, the shim, SeedQR and their suites from here. That merge is
 > already recorded with `-s ours`, taking the ancestry and none of the
@@ -540,8 +540,8 @@ Core an opaque string, and the one exception is documented at the top of
 payload, which is bounded by a length cap and a charset check before any
 container code runs.
 
-**Total functional code: 3,886 lines** (8,225 with blanks/comments).
-**Test code: 9,465 lines**, none of which ships.
+**Total functional code: 3,886 lines** (8,246 with blanks/comments).
+**Test code: 9,476 lines**, none of which ships.
 **Vendored, not ours: 1,868 lines** in [`hw/vendor/`](hw/vendor/): the
 BC-UR animated-QR codec, which is Blockchain Commons' by way of
 SeedSigner and is unmodified, and SeedSigner's ST7789 display driver,

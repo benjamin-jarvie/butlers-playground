@@ -2,8 +2,8 @@
 
 This module encodes, splits, recovers and verifies BIP-0032 master seeds
 in the codex32 format. Together with shim/bip39_shim.py it is the only
-code in Corky that touches secret material outside Bitcoin Core, so it is
-held to the same three rules:
+code in Core Signer that touches secret material outside Bitcoin Core,
+so it is held to the same three rules:
 
   1. Python standard library only. No third-party imports, ever.
   2. No elliptic-curve math. GF(32) share arithmetic, hashing and
@@ -170,7 +170,7 @@ def ms32_recover(shares):
     return ms32_interpolate(shares, 16)
 
 
-# ---- Corky API ---------------------------------------------------------
+# ---- Core Signer API ---------------------------------------------------
 
 _S_INDEX = CHARSET.index("s")  # 16
 # Fresh-share indexes in the order BIP93 gives: letters alphabetical,
@@ -297,14 +297,24 @@ def derive_identifier(seed: bytes) -> str:
     """Deterministic 4-char bech32 identifier for a seed. Layer 1: this
     computes on secret material, so it lives in the frozen module rather
     than in the UI (README layer discipline). Stdlib hashing only."""
+    # THE DOMAIN SEPARATOR KEEPS THE OLD NAME FOR EVER. The device was
+    # called Corky until 2026-09, and this byte string is an input to the
+    # hash, not a label: rename it and every identifier this device has
+    # ever derived changes, so a backup written last month would come
+    # back under a different name. Renaming the project cannot reach in
+    # here. Same for the split separator below.
     digest = hashlib.sha256(b"corky-id" + seed).digest()[:4]
     return "".join(CHARSET[b % 32] for b in digest)
 
 
 def derive_split_entropy(seed: bytes, k: int, n: int) -> bytes:
     """Deterministic split randomness, domain-separated, derived from the
-    seed itself: Corky has no RNG and never generates entropy (PLAN A-18).
-    Shares therefore re-derive identically. Stdlib hashing only."""
+    seed itself: Core Signer has no RNG and never generates entropy (PLAN
+    A-18). Shares therefore re-derive identically. Stdlib hashing only.
+
+    `corky-split-v1` is the separator and it is frozen under that name.
+    See derive_identifier: it is hash input, so a rename would re-derive
+    every existing share set into a different one."""
     need = 32 * max(1, k - 1) * max(1, n)
     out = b""
     counter = 0

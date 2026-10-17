@@ -1564,7 +1564,7 @@ class Session:
         """Collect shares until the set is recoverable.
 
         Codex32QR/v1-48 section 5.2, which Ben Westgate asked us to
-        implement rather than invent (corky issue #9):
+        implement rather than invent (CoreSigner issue #9):
 
           - a string that is the secret opens the wallet at once;
           - a share routes into collection instead of being refused;

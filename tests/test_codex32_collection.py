@@ -1,6 +1,7 @@
 """Codex32QR/v1-48 section 5.2: the rules a share collection obeys.
 
-Ben Westgate opened corky issue #9 asking us not to invent a codex32 QR
+Ben Westgate opened CoreSigner issue #9 asking us not to invent a
+codex32 QR
 format, and then published one: `Codex32QR/v1-48`, in
 FractalEncrypt/FractalEncrypt_seedsigner. Its section 5 is not about the
 QR at all. It is about what a device does with the strings it reads, and

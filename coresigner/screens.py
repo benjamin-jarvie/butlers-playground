@@ -2182,14 +2182,24 @@ def codex32_scan(w, h):
                 outline=GREY)
     d.text((w // 2, int(h * 0.40)), "QR", font=_font(int(h * 0.09)),
            fill=GREY, anchor="mm")
-    # BIP93 does not define a QR format or namespace: the QR just holds the
-    # codex32 string, uppercase (BIP93: "SHOULD use the uppercase form"), and
-    # 128-bit shares fit in 48 characters. Do not imply a named standard.
-    _fit(d, (w // 2, int(h * 0.66)), "Plain codex32 text, uppercase",
+    # `Codex32QR/v1-48` is a real published profile as of 2026-10-10, in
+    # FractalEncrypt's seedsigner fork, and naming it here is now a fact
+    # rather than a claim. It is PLAIN TEXT in the QR: 48 characters, QR
+    # version 3, error correction L, uppercase as the display form
+    # (BIP93: "SHOULD use the uppercase form"). BIP93 itself still
+    # defines no QR format, so the profile is the thing to name.
+    #
+    # The third line used to say "256-bit shares: type them instead",
+    # which was never true of this device. The profile covers 128-bit
+    # seeds, and `codex32.validate` accepts BIP93's whole 16 to 64 byte
+    # range, so a 74 or 127 character string scans and recovers like any
+    # other. Measured 2026-10-16: all three lengths validate, split and
+    # recover (tests/test_codex32.py).
+    _fit(d, (w // 2, int(h * 0.66)), "Codex32QR/v1-48, plain text",
          int(h * 0.05), OCHRE, "mm", int(w * 0.92))
     _fit(d, (w // 2, int(h * 0.735)), "One share per QR, or one per line",
          int(h * 0.045), GREY, "mm", int(w * 0.92))
-    _fit(d, (w // 2, int(h * 0.80)), "256-bit shares: type them instead",
+    _fit(d, (w // 2, int(h * 0.80)), "Longer BIP93 strings scan too",
          int(h * 0.045), GREY, "mm", int(w * 0.92))
     _actions(d, w, h, ["BACK", "TYPE INSTEAD"], 1)
     return img

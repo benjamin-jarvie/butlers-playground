@@ -392,10 +392,30 @@ for _mn in ("abandon " * 11 + "about",
     check(f"split round-trip ({len(_mn.split())} words): same wallet",
           codex32.to_xprv(_rec), mnemonic_to_xprv(_mn))
 
+# ---- every seed length BIP93 allows, because a screen claims it -------
+#
+# The scan screen used to say "256-bit shares: type them instead", which
+# was never true of this device: the profile covers 128-bit seeds and our
+# validator takes BIP93's whole 16 to 64 byte range. The screen now says
+# longer strings scan too, so this is the measurement behind that line.
+for _n in (16, 32, 64):
+    _seed = bytes(range(_n))
+    _secret = codex32.encode_secret("l0ve", _seed, threshold=0)
+    _, _back = codex32.decode_secret(codex32.validate(_secret))
+    check(f"{_n * 8}-bit seed: secret round-trips", _back, _seed)
+    _sh = codex32.split(_seed, 2, 3, "l0ve",
+                        codex32.derive_split_entropy(_seed, 2, 3))
+    check(f"{_n * 8}-bit seed: every share is the same length",
+          {len(x) for x in _sh}, {len(_secret)})
+    _, _rec = codex32.decode_secret(codex32.recover(_sh[:2]))
+    check(f"{_n * 8}-bit seed: two of three shares recover it", _rec, _seed)
+
+
 # ---- Codex32QR/v1-48: interop against the profile's own vectors --------
 #
 # Ben Westgate asked us not to invent a codex32 QR format and to use the
-# one his SeedSigner fork publishes (corky issue #9, 2026-09-21). He then
+# one his SeedSigner fork publishes (CoreSigner issue #9, 2026-09-21).
+# He then
 # published it. The profile is `Codex32QR/v1-48` and it is written in
 # docs/codex32_qr/Codex32QR_Spec.md of his seedsigner fork, which is
 # FractalEncrypt/FractalEncrypt_seedsigner and not this tree. Its
