@@ -1609,12 +1609,7 @@ class Session:
         need = self._threshold_of(shares[0]) if shares else None
         self._retry_share = None
         while need is None or len(shares) < need:
-            self.display.show(screens.codex32_shares(
-                self.w, self.h,
-                tuple(self._index_of(sh).upper() for sh in shares),
-                need or "?"))
-            entered = self._codex32_entry_one(self._retry_share)
-            self._retry_share = None
+            entered = self._next_share(shares, need)
             if entered is None:
                 return False
             try:
@@ -1687,6 +1682,42 @@ class Session:
     #: bech32's separator, so there is nothing for a person to type and
     #: three characters of a share they cannot get wrong.
     CODEX32_PREFIX = "ms1"
+
+    def _next_share(self, shares, need):
+        """One more share, scanned or typed, or None to abort.
+
+        Section 5.2 asks for both ways in at every step: a 2-of-3
+        recovery where the other share is a QR on a card should not have
+        to be typed because the first one was scanned. SCAN is the middle
+        action and TYPE the right one, which the screen opens on. A share
+        being retyped after a checksum failure skips the question and
+        goes straight to the grid with its string still in it.
+        """
+        if self._retry_share is not None:
+            prefill, self._retry_share = self._retry_share, None
+            return self._codex32_entry_one(prefill)
+        sel = 2
+        while True:
+            self.display.show(screens.codex32_shares(
+                self.w, self.h,
+                tuple(self._index_of(sh).upper() for sh in shares),
+                need or "?", sel))
+            key = self.buttons.read()
+            if key in ("l", "r"):
+                sel = (sel + (1 if key == "r" else -1)) % 3
+            elif key in ("b", "c"):
+                return None
+            elif key in ("a", "p"):
+                if sel == 0:
+                    return None
+                if sel == 2:
+                    return self._codex32_entry_one()
+                payload = self._scan_key_guarded()
+                if payload is None:
+                    continue
+                lines = [ln.strip() for ln in payload.splitlines()
+                         if ln.strip()]
+                return lines[0] if lines else None
 
     def _codex32_entry_one(self, prefill=None):
         """One codex32 string, typed on the device's own text grid.
@@ -1846,61 +1877,90 @@ class Session:
             elif key == "b":
                 return None
 
+    def _candidates(self, prefix):
+        """The first three words this prefix can still be."""
+        return [w for w in self.wordlist if w.startswith(prefix)][:3]
+
+    def _only_word(self, prefix):
+        """The one word this prefix can be, or None while more than one.
+
+        BIP39 words are unique in their first four letters and most are
+        unique sooner, so this is what decides that a word is finished
+        and nothing further is being chosen.
+        """
+        found = [w for w in self.wordlist if w.startswith(prefix)]
+        return found[0] if len(found) == 1 else None
+
+    #: The grid's 32 cells, of which 26 are letters. UP and DOWN move a
+    #: row and LEFT and RIGHT move a cell, both wrapping, which is the
+    #: codex32 grid's rule and now the only one.
+    WORD_GRID = 32
+
+    def _word_move(self, key, gi):
+        """Where the word grid's cursor goes, or None if the key is not a
+        move. Lifted out so _collect_words reads as the word loop it is
+        rather than as a keypad."""
+        step = {"u": -8, "d": 8, "l": -1, "r": 1}.get(key)
+        return None if step is None else (gi + step) % self.WORD_GRID
+
+    def _one_word(self, number, total):
+        """One BIP39 word, typed on the letter grid.
+
+        Returns the word, or "" to step back to the previous one, or None
+        to abort the whole entry.
+
+        A and the centre press both TYPE. The centre press used to take
+        the top candidate, which is a second meaning for the one button
+        the rule reserves for select (Ben, on the board, 2026-09-18), so
+        the word takes ITSELF the moment one candidate is left: BIP39
+        words are unique in their first four letters and most are unique
+        sooner, so there is nothing further to choose.
+
+        It is not a trade. The old loop stopped when the word merely
+        HEADED the list and spent a press taking it; this one types until
+        the list is one long and spends nothing. Over the same 24 words:
+        348 presses against 352 (tests/test_ui_cost.py).
+        """
+        prefix, gi = "", 0
+        while True:
+            self.display.show(screens.seed_entry(
+                self.w, self.h, number, total, prefix,
+                tuple(self._candidates(prefix)), gi), sensitive=True)
+            key = self.buttons.read()
+            moved = self._word_move(key, gi)
+            if moved is not None:
+                gi = moved
+            elif key in ("a", "p"):
+                if gi < len(screens.ALPHABET):
+                    prefix += screens.ALPHABET[gi]
+                    only = self._only_word(prefix)
+                    if only is not None:
+                        return only
+            elif key == "b":
+                # B on an empty prefix steps back to the previous word, so
+                # a word committed by mistake at position 3 of 24 is
+                # fixable without abandoning the whole entry (D5).
+                if prefix:
+                    prefix = prefix[:-1]
+                else:
+                    return ""
+            elif key == "c":
+                return None
+
     def _collect_words(self):
         total = self._pick_seed_length()
         if total is None:
             return None
         words = []
         while len(words) < total:
-            prefix, gi = "", 0
-            while True:
-                # B on an empty prefix steps back to the previous word, so a
-                # word committed by mistake at position 3 of 24 is fixable
-                # without abandoning the whole entry (D5).
-                candidates = [w for w in self.wordlist
-                              if w.startswith(prefix)][:3]
-                self.display.show(screens.seed_entry(
-                    self.w, self.h, len(words) + 1, total,
-                    prefix, tuple(candidates), gi), sensitive=True)
-                key = self.buttons.read()
-                # 8x4 grid, wrap like the codex32 grid; letters are 0..25.
-                if key == "u":
-                    gi = (gi - 8) % 32
-                elif key == "d":
-                    gi = (gi + 8) % 32
-                elif key == "l":
-                    gi = (gi - 1) % 32
-                elif key == "r":
-                    gi = (gi + 1) % 32
-                elif key in ("a", "p"):
-                    # BOTH type. The centre press used to take the top
-                    # candidate, which is the second meaning the rule
-                    # forbids, so the word now takes ITSELF: BIP39 words
-                    # are unique in their first four letters, and most
-                    # are unique sooner, so the moment one candidate is
-                    # left there is nothing further to choose.
-                    #
-                    # It is not a trade. The old loop stopped when the
-                    # word merely HEADED the list and spent a press
-                    # taking it; this one types until the list is one
-                    # long and spends nothing. Measured over the same 24
-                    # words: 348 presses against 352
-                    # (tests/test_ui_cost.py).
-                    if gi < 26:
-                        prefix += screens.ALPHABET[gi]
-                        if len([w for w in self.wordlist
-                                if w.startswith(prefix)]) == 1:
-                            words.append(next(w for w in self.wordlist
-                                              if w.startswith(prefix)))
-                            break
-                elif key == "b":
-                    if prefix:
-                        prefix = prefix[:-1]
-                    elif words:
-                        words.pop()           # undo the previous word
-                        break
-                elif key == "c":
-                    return None
+            word = self._one_word(len(words) + 1, total)
+            if word is None:
+                return None
+            if word == "":
+                if words:
+                    words.pop()           # undo the previous word
+                continue
+            words.append(word)
         return words
 
 
@@ -2917,7 +2977,7 @@ class Session:
         # which wallet this signature is for, and who else is in it.
         ours = next((k.xfp for k in self.keys if k.name == wallet), None)
         outs = [(o["address"], o["amount_btc"]) for o in info["outputs"]]
-        pages = max(1, (len(outs) + 1) // 2)
+        pages = screens.review_pages(outs)
         page, seen, refused, sel = 0, {0}, False, 1
         while True:
             self.display.show(screens.review(

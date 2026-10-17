@@ -62,5 +62,29 @@ else
   echo "          below is about six points low.)"
 fi
 arch -arm64 python3 -m coverage combine --rcfile="$HOOK/.coveragerc" >/dev/null
-arch -arm64 python3 -m coverage report --rcfile="$HOOK/.coveragerc" -m
+arch -arm64 python3 -m coverage report --rcfile="$HOOK/.coveragerc" -m \
+  | tee "$HOOK/report.txt"
+# The README states this percentage, and until 2026-10-16 nothing checked
+# it: the page said 86% while this script measured 81%, because two e2e
+# suites fail before the device sessions they drive can run. A figure a
+# reader uses to judge how well the thing is tested is the last one that
+# should be taken on trust.
+MEASURED=$(grep -E "^TOTAL" "$HOOK/report.txt" | grep -oE "[0-9]+%" \
+           | tr -d '%')
+# The dot stands in for the backtick the README writes around the path.
+# A backtick inside single quotes reads as a command substitution that
+# cannot expand (SC2016), the gate for that aborts run_tests.sh under
+# set -e, and one quoted character therefore stopped every suite from
+# running and reported 11% coverage. The word that names the linter
+# cannot start a comment line either: that is a DIRECTIVE, and
+# run_tests.sh already carries the same warning above its own gate.
+STATED=$(grep -oE '\*\*[0-9]+% of .coresigner/.\*\*' "$ROOT/README.md" \
+         | grep -oE '[0-9]+')
+if [ -z "$STATED" ]; then
+  echo "FAIL the README no longer states a coverage percentage"
+elif [ "$STATED" != "$MEASURED" ]; then
+  echo "FAIL the README says ${STATED}% and this run measured ${MEASURED}%"
+else
+  echo "PASS the README's ${STATED}% is the figure this run measured"
+fi
 rm -rf "$HOOK"

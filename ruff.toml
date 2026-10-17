@@ -26,5 +26,13 @@ max-complexity = 12
 # because they run as scripts (E402), and a test's main() is one long
 # walk through a session by design (C901). None of that is a defect.
 "tests/**" = ["ARG", "E701", "E702", "E402", "C901", "SIM105", "SIM115", "E731"]
+# BIP93's OWN REFERENCE IMPLEMENTATION, taken verbatim and frozen: the
+# checksum functions, the GF(32) arithmetic and the interpolation are
+# copied from the standard so a reader can diff them against the text,
+# and SHIM_HASH pins the bytes. `l` is the spec's variable name (E741),
+# `32 <= a` is the spec's comparison (SIM300), and the if/else the spec
+# writes stays an if/else (SIM108). Restyling any of it would break the
+# pin and the only property the file has: that it is the spec.
+"coresigner/codex32.py" = ["E741", "SIM300", "SIM108"]
 "tools/**" = ["ARG", "E402"]
 "m0/**" = ["E402", "C901"]

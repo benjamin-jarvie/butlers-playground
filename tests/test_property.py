@@ -101,7 +101,7 @@ def prop_codex32_split_recover(seed, ident, kn, rand, subset_seed):
     # k-1 shares must be rejected (wrong count) for this threshold.
     try:
         codex32.recover(chosen[:k - 1])
-        assert False, "recover accepted k-1 shares"
+        raise AssertionError("recover accepted k-1 shares")
     except codex32.Codex32Error:
         pass
 
@@ -131,7 +131,7 @@ def prop_codex32_flip_breaks_checksum(seed, ident, pos, repl):
         # A valid checksum after a single-char flip is a checksum failure
         # of the property only if it actually decodes; ms32 detects all
         # single-char substitutions, so this must raise.
-        assert False, f"flipped char passed validate: {flipped}"
+        raise AssertionError(f"flipped char passed validate: {flipped}")
     except codex32.Codex32Error:
         pass
 
@@ -157,7 +157,7 @@ def prop_seedqr_out_of_range_raises(bad, tail):
     digits = f"{bad:04d}" + "".join(f"{i:04d}" for i in tail)
     try:
         seedqr.decode_standard(digits)
-        assert False, f"accepted out-of-range group {bad}"
+        raise AssertionError(f"accepted out-of-range group {bad}")
     except seedqr.SeedQrError:
         pass
 
@@ -851,118 +851,6 @@ def prop_a_failing_stick_does_not_lose_a_signature():
 
 def sats_to_btc(sats: int) -> Decimal:
     return (Decimal(sats) / Decimal(10**8)).quantize(Decimal("0.00000001"))
-
-# ---- Layer 1's own properties ------------------------------------------
-# The shim, codex32 and SeedQR, lifted unchanged with the forward merge of
-# 2026-10-16. `pure` deleted these with the modules they exercise; this is
-# the repository that keeps both, so it keeps the properties too. The
-# oracle is an independent implementation (bip_utils), which is the only
-# way a round-trip test says anything: our own code agreeing with itself
-# proves nothing.
-
-@given(entropy=st.binary(min_size=16, max_size=32).filter(
-    lambda b: len(b) in (16, 20, 24, 28, 32)))
-@settings(max_examples=EXAMPLES, deadline=None)
-def prop_shim_crosscheck(entropy):
-    mnemonic = entropy_to_mnemonic(entropy)
-    # Core Signer's shim.
-    xprv = bip39_shim.mnemonic_to_xprv(mnemonic, mainnet=True)
-    # Independent oracle: bip-utils.
-    seed = Bip39SeedGenerator(mnemonic).Generate()
-    ref_xprv = Bip32Slip10Secp256k1.FromSeed(seed).PrivateKey().ToExtended()
-    assert xprv == ref_xprv, f"xprv mismatch\n ours={xprv}\n ref ={ref_xprv}"
-    # And the shim's own seed matches the oracle's seed.
-    assert bip39_shim.mnemonic_to_seed(mnemonic) == seed
-
-
-@given(seed=st.binary(min_size=16, max_size=32).filter(
-           lambda b: len(b) in (16, 32)),
-       ident=_IDENT)
-@settings(max_examples=EXAMPLES, deadline=None)
-def prop_codex32_secret_roundtrip(seed, ident):
-    s = codex32.encode_secret(ident, seed)
-    got_ident, got_seed = codex32.decode_secret(s)
-    assert got_seed == seed
-    assert got_ident == ident.lower()
-    assert codex32.validate(s) == s.lower()
-
-
-@given(seed=st.binary(min_size=16, max_size=32).filter(
-           lambda b: len(b) in (16, 32)),
-       ident=_IDENT,
-       kn=st.tuples(st.integers(2, 9), st.integers(2, 9)).map(
-           lambda t: (min(t), max(t))),
-       rand=st.binary(min_size=300, max_size=600),
-       subset_seed=st.integers(min_value=0, max_value=2**32))
-@settings(max_examples=EXAMPLES, deadline=None,
-          suppress_health_check=[HealthCheck.filter_too_much])
-def prop_codex32_split_recover(seed, ident, kn, rand, subset_seed):
-    k, n = kn
-    shares = codex32.split(seed, k, n, ident, rand)
-    assert len(shares) == n
-    # Deterministic k-subset from subset_seed.
-    import random
-    rng = random.Random(subset_seed)
-    chosen = rng.sample(shares, k)
-    recovered = codex32.recover(chosen)
-    _, rseed = codex32.decode_secret(recovered)
-    assert rseed_eq(rseed=rseed, seed=seed)
-    # k-1 shares must be rejected (wrong count) for this threshold.
-    try:
-        codex32.recover(chosen[:k - 1])
-        assert False, "recover accepted k-1 shares"
-    except codex32.Codex32Error:
-        pass
-
-
-@given(seed=st.binary(min_size=16, max_size=16),
-       ident=_IDENT,
-       pos=st.integers(min_value=0),
-       repl=st.integers(min_value=0, max_value=31))
-@settings(max_examples=EXAMPLES, deadline=None)
-def prop_codex32_flip_breaks_checksum(seed, ident, pos, repl):
-    s = codex32.encode_secret(ident, seed)
-    # Flip one payload/checksum char after the 'ms1' + header prefix.
-    body_start = s.index("1") + 1
-    idx = body_start + (pos % (len(s) - body_start))
-    new_c = codex32.CHARSET[repl]
-    if new_c == s[idx]:
-        new_c = codex32.CHARSET[(repl + 1) % 32]
-    flipped = s[:idx] + new_c + s[idx + 1:]
-    if flipped == s:
-        return
-    try:
-        codex32.validate(flipped)
-        # A valid checksum after a single-char flip is a checksum failure
-        # of the property only if it actually decodes; ms32 detects all
-        # single-char substitutions, so this must raise.
-        assert False, f"flipped char passed validate: {flipped}"
-    except codex32.Codex32Error:
-        pass
-
-
-@given(indices=st.lists(st.integers(0, 2047), min_size=12, max_size=24)
-       .filter(lambda x: len(x) in (12, 15, 18, 21, 24)))
-@settings(max_examples=EXAMPLES, deadline=None)
-def prop_seedqr_roundtrip(indices):
-    digits = "".join(f"{i:04d}" for i in indices)
-    words = seedqr.decode_standard(digits)
-    # Re-encode words back to indices and compare.
-    index = {w: i for i, w in enumerate(_WORDLIST)}
-    re_digits = "".join(f"{index[w]:04d}" for w in words.split())
-    assert re_digits == digits
-
-
-@given(bad=st.integers(2048, 9999),
-       tail=st.lists(st.integers(0, 2047), min_size=11, max_size=11))
-@settings(max_examples=EXAMPLES, deadline=None)
-def prop_seedqr_out_of_range_raises(bad, tail):
-    digits = f"{bad:04d}" + "".join(f"{i:04d}" for i in tail)
-    try:
-        seedqr.decode_standard(digits)
-        assert False, f"accepted out-of-range group {bad}"
-    except seedqr.SeedQrError:
-        pass
 
 def main():
     checks = [

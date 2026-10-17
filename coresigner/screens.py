@@ -540,6 +540,22 @@ def _cosigner_row(d, w, y, cosigners, ours, size, maxw):
             x += gap * 2 + sep_w
 
 
+def review_pages(outputs):
+    """How many pages the review takes. ONE OUTPUT A PAGE.
+
+    THE ONLY PLACE THIS IS DECIDED. It was decided twice: this screen
+    went to one output a page on 2026-09-25, when the whole address
+    started being drawn in fours and two of them stopped fitting, and
+    `main`'s review loop kept `(len(outs) + 1) // 2`. The screen then
+    drew "OUTPUT 1/2" while the loop believed there was one page, and the
+    loop is what guards signing, so a two-output transaction could be
+    signed with the second output never on screen. The guard's own
+    comment said "every output must have been on screen before signing".
+    TESTING.md rule 11 is exactly this defect: a rule in two places.
+    """
+    return max(1, len(outputs))
+
+
 def review(w, h, outputs, fee_btc, input_total_btc=None,
            page=0, unseen_pages=False, actions_sel=1,
            quorum=None, cosigners=(), ours=None,
@@ -564,7 +580,7 @@ def review(w, h, outputs, fee_btc, input_total_btc=None,
     # 91 pixels, with nothing between them. One output a page buys the
     # room, and it is the same direction the 2026-09-01 call was already
     # going.
-    pages = max(1, len(outputs))
+    pages = review_pages(outputs)
     title = ("REVIEW  TRANSACTION" if pages == 1
              else f"REVIEW  ·  OUTPUT {page + 1}/{pages}")
     # This is the screen you sign from, and it was the one scrollable
@@ -2211,18 +2227,25 @@ def codex32_scan(w, h):
 
 
 
-def codex32_shares(w, h, have_ids=("A", "C"), k=3):
+def codex32_shares(w, h, have_ids=("A", "C"), k=3, selected=2):
+    """What the collection holds, and the two ways to add to it.
+
+    Codex32QR/v1-48 section 5.2: "UX MUST prompt for additional shares
+    and allow either scan or manual entry until recoverability is
+    reached." The bar used to say ADD SHARE and go straight to the grid,
+    so the second share of a 2-of-3 could only be typed even when the
+    camera was right there and the other share was a QR on a card.
+    """
     img, d = _frame(w, h, "COLLECT  SHARES")
     d.text((w // 2, int(h * 0.30)), f"{len(have_ids)} of {k}",
            font=_font(int(h * 0.14)), fill=CREAM, anchor="mm")
-    d.text((w // 2, int(h * 0.48)),
-           "held: " + "  ".join(have_ids),
-           font=_font(int(h * 0.06)), fill=OCHRE, anchor="mm")
-    d.text((w // 2, int(h * 0.62)), "each share checksums on entry;",
-           font=_font(int(h * 0.045)), fill=GREY, anchor="mm")
-    d.text((w // 2, int(h * 0.69)), "duplicates are refused",
-           font=_font(int(h * 0.045)), fill=GREY, anchor="mm")
-    _actions(d, w, h, ["ABORT", "ADD SHARE"], 1)
+    _fit(d, (w // 2, int(h * 0.48)), "Held: " + "  ".join(have_ids),
+         int(h * 0.06), OCHRE, "mm", int(w * 0.92))
+    _fit_block(d, ["Each share checksums on entry,",
+                   "and a repeat of one you hold is ignored."],
+               [(w // 2, int(h * 0.62)), (w // 2, int(h * 0.69))],
+               int(h * 0.045), GREY, "mm", int(w * 0.92))
+    _actions(d, w, h, ["ABORT", "SCAN", "TYPE"], selected)
     return img
 
 

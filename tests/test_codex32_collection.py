@@ -102,20 +102,25 @@ from e2e_keys import text_keys       # noqa: E402
 
 
 def share_keys(share):
-    """Presses that type one codex32 string and commit it.
+    """Presses that pick TYPE, type one codex32 string, and commit it.
 
-    The 'ms1' prefix is prefilled by the entry loop, so only what follows
-    is typed, and the walk down to DONE is the grid's own.
+    The collection screen offers ABORT, SCAN and TYPE now, because
+    section 5.2 asks for both ways in at every step, and TYPE is the
+    action it opens on. The 'ms1' prefix is prefilled by the entry loop,
+    so only what follows is typed, and the walk down to DONE is the
+    grid's own.
     """
-    return list(text_keys("codex32", share.lower()[3:]))
+    return ["a"] + list(text_keys("codex32", share.lower()[3:]))
 
 
 def abort_keys():
-    """Presses that leave the grid without typing. C is the MODE button
-    on this device, not a way out, so the way out is the action bar:
-    down off the grid, left to CANCEL, select."""
-    from e2e_keys import commit_presses
-    return list(commit_presses("codex32", 0, 0)[:-1]) + ["l", "a"]
+    """Presses that leave the collection without adding a share.
+
+    One press, on the collection screen rather than inside the grid: C
+    leaves every screen on this device, and the collection screen is
+    where the loop waits now.
+    """
+    return ["c"]
 
 
 class Harness:

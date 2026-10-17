@@ -137,6 +137,31 @@ vend = sum(len(f.read_text().splitlines())
            for f in (ROOT / "hw" / "vendor").rglob("*.py"))
 pin(r"Vendored, not ours: ([\d,]+) lines", "vendored", vend)
 
+# The same four figures again, in the audit paragraph at the top of "What
+# you are trusting". 2026-10-16: that paragraph is new, and the sentence
+# beside it had said 2,407 lines since before the multisig work. It was
+# 712 lines stale, and nothing failed, because the only pinned totals
+# were the ones further down the page. A number a reader uses to decide
+# how much code to read is the last one that should be allowed to drift.
+pin(r"What an auditor reads: ([\d,]+) lines, in one directory",
+    "auditor's total", total)
+pin(r"and Core Signer's ([\d,]+) lines do not", "lines-not-read", total)
+pin(r"holds ([\d,]+) lines that are not ours either", "vendored, again",
+    vend)
+pin(r"holds ([\d,]+) lines that never ship", "test code, again", tl)
+
+# Every shipped file must be NAMED on the page, not just counted in it.
+# hal.py and splash.py were in LAYER2's total and in no list a reader
+# could see, so the page described six files as four and an auditor
+# reading only the README would have missed 124 lines that ship.
+shipped_files = sorted((ROOT / "coresigner").glob("*.py"))
+unnamed = [f.name for f in shipped_files if f.name not in README]
+if unnamed:
+    bad(f"{len(unnamed)} shipped file(s) the README never names: "
+        + ", ".join(unnamed))
+else:
+    ok(f"the README names all {len(shipped_files)} files in coresigner/")
+
 # ...and the split between what runs and what does not. The README said
 # "every one of these lines runs on the device" while 383 of them were a
 # driver nothing imports (two-axis review, 2026-09-08). A count nobody
@@ -449,7 +474,15 @@ for doc in DOCS + ["PLAN.md"]:
         # A line that names SeedSigner is citing THEIR source, not ours.
         # Core Signer vendors their drivers and steals their ideas, and a
         # reader has to be able to tell which tree a path lives in.
-        external = "SeedSigner" in line or "seedsigner" in line
+        #
+        # 2026-10-16: the same rule for Bitcoin Core's own tree. The
+        # README now cites `doc/JSON-RPC-interface.md` on bitcoin/bitcoin
+        # for the rule that Core's other programs have to be trusted, and
+        # that path is real in Core and absent here. The exemption needs
+        # the line to carry the repository name, so a bare path still
+        # fails and a cited one does not.
+        external = ("SeedSigner" in line or "seedsigner" in line
+                    or "bitcoin/bitcoin" in line)
         for m in FILE.finditer(line):
             named = m.group(1)
             if external:
@@ -596,6 +629,52 @@ else:
                 f"{const} is {want}. A tester was told a limit that moved")
         else:
             ok(f"the tester pack's {label} ceiling matches {const} ({want})")
+
+# --- the README states the same two ceilings, and a capability ---------
+# 2026-10-16. The pack's numbers were pinned and the README's were not,
+# so the README named 150 and never named 120 at all, and multisig has
+# been in the pilot since 2026-09-23.
+main_py = (ROOT / "coresigner" / "main.py").read_text()
+for const, phrase in (("MAX_SIGNABLE_INPUTS", r"\*\*(\d+) inputs\*\*"),
+                      ("MAX_SIGNABLE_MULTISIG_INPUTS",
+                       r"\*\*(\d+) for a quorum\*\*")):
+    m = re.search(rf"^{const} = (\d+)$", main_py, re.M)
+    r = re.search(phrase, README)
+    if not m:
+        bad(f"{const} is gone from main.py; the README still quotes it")
+    elif not r:
+        bad(f"the README no longer states the ceiling {const} owns")
+    elif r.group(1) != m.group(1):
+        bad(f"the README says {r.group(1)} where {const} is {m.group(1)}")
+    else:
+        ok(f"the README's ceiling matches {const} ({m.group(1)})")
+
+# A capability claim, the other way round. These sentences were true once
+# and the code moved under them: the README told a reader to type a paper
+# backup into a hot wallet, four weeks after the device could export the
+# cosigner key without the private key leaving. A phrase that denies a
+# shipped capability fails here.
+sig_py = (ROOT / "coresigner" / "signer.py").read_text()
+if "def cosigner_qr(" in sig_py and "def write_cosigner(" in sig_py:
+    DENIALS = ("single signature in v1", "Single signature only",
+               "does not sign for a quorum",
+               "does not export a cosigner key", "No multisig")
+    # A line that QUOTES the old wording is allowed to carry it: the
+    # correction on the page names what it used to say, which is how a
+    # reader knows the page was wrong rather than merely different. The
+    # test looks for a denial being MADE, so a line with a double quote
+    # on it is skipped and an unquoted one still fails.
+    said = [d for d in DENIALS
+            if any(d in line and '"' not in line
+                   for line in README.splitlines())]
+    if said:
+        bad("signer.py exports a cosigner key, and the README still says: "
+            + "; ".join(said))
+    else:
+        ok("the README does not deny the multisig support that ships")
+else:
+    bad("signer.py no longer exports a cosigner key; the README's "
+        "multisig section is now a claim about nothing")
 
 if fails:
     print("\n" + "\n".join(fails))
