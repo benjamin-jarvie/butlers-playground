@@ -283,7 +283,8 @@ else:
 def run_tools(sess):
     ran = []
     recorder(sess, ("_tool_leak_check", "_tool_check_address",
-                    "_tool_verify", "_tool_backup"), ran)
+                    "_tool_verify", "_tool_backup",
+                    "_tool_export_codex32"), ran)
     sess.state_tools()
     return ran[0] if ran else "nothing"
 
@@ -293,6 +294,7 @@ pin("TOOLS", screens.TOOLS_OPTIONS, run_tools, {
     "Check an address": "_tool_check_address",
     "Verify a codex32 share": "_tool_verify",
     "Back up seed as codex32": "_tool_backup",
+    "Export codex32 QR": "_tool_export_codex32",
 })
 
 

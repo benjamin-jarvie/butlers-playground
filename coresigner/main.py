@@ -366,6 +366,14 @@ class Session:
         #: path and used again by Tools > Back up, so a backup encodes the
         #: wallet the words plus passphrase actually open.
         self.passphrase = ""
+        #: What a codex32 export may offer, which is Codex32QR/v1-48
+        #: section 6.2's candidate set and nothing more: the secret, how
+        #: it got here, and the shares that were actually entered. Set by
+        #: the codex32 load paths and by Tools > Back up. It holds secret
+        #: material, so it lives exactly as long as the session and the
+        #: ramdisk do, and tests/test_no_persistence.py is what keeps
+        #: that true of every string this class holds.
+        self.codex32 = None
         #: The keys loaded in Core this session, in slot order (ticket 03),
         #: and the wallet name of the one most recently loaded or chosen.
         #: Refreshed whenever a flow returns, because any of them can open
@@ -765,6 +773,8 @@ class Session:
                 self._tool_verify()
             elif choice == 3:
                 self._tool_backup()
+            elif choice == 4:
+                self._tool_export_codex32()
 
     # -- export the public key (ticket 12) ---------------------------------
 
@@ -1501,17 +1511,35 @@ class Session:
 
     def _codex32_open(self, shares):
         """Open the wallet from one codex32 secret or k shares. Pure BIP32:
-        seed -> xprv via the frozen modules; Core does the rest."""
+        seed -> xprv via the frozen modules; Core does the rest.
+
+        It also keeps what section 6.2 calls the candidate set, so the
+        export can offer the secret and the shares that were entered. The
+        secret's SOURCE is kept with it, because a recovered S and an
+        entered one are not the same claim and his 6.2 says to label the
+        difference.
+        """
         self.display.show(screens.busy(self.w, self.h,
                                        "Recovering seed, deriving in Core…"))
         if len(shares) == 1 and self._threshold_of(shares[0]) == 0:
-            _, seed = codex32.decode_secret(shares[0])
-        else:
-            secret = codex32.recover(shares)
+            secret, derived = shares[0], False
             _, seed = codex32.decode_secret(secret)
+        else:
+            secret, derived = codex32.recover(shares), True
+            _, seed = codex32.decode_secret(secret)
+        self._keep_codex32(secret, derived,
+                           [] if secret in shares else shares)
         xprv = codex32.to_xprv(seed, mainnet=(self.rpc.chain == "main"))
         self.key = signer.open_session_xprv(self.rpc, xprv)
         return True
+
+    def _keep_codex32(self, secret, derived, shares):
+        """Hold section 6.2's candidate set for the rest of the session."""
+        self.codex32 = {
+            "secret": secret,
+            "derived": derived,
+            "shares": {self._index_of(sh): sh for sh in shares},
+        }
 
     def _seed_codex32_scan(self):
         """One QR, one or more codex32 strings, one per line.
@@ -1733,6 +1761,8 @@ class Session:
         else:
             outputs = codex32.split(seed, 2, 3, ident,
                                    codex32.derive_split_entropy(seed, 2, 3))
+        self._keep_codex32(secret, True,
+                           outputs if len(outputs) > 1 else [])
         for i, out in enumerate(outputs):
             # Section 6.3: the secret first, then the split indices in
             # order, and the same paging every backup on this device uses.
@@ -1745,6 +1775,63 @@ class Session:
             self.w, self.h, ok=True,
             detail="Transcribed; the kit worksheets own paper"))
         self.buttons.read()
+
+    def _tool_export_codex32(self):
+        """Codex32QR/v1-48 section 6: show one held string as a QR.
+
+        The gate is 6.1: nothing is offered until a valid secret is
+        available, because a partial set is not a backup and a QR of one
+        share pretending otherwise is worse than no button. 6.2 is the
+        candidate set, the secret plus the shares that were entered, with
+        the secret's source carried. 6.3 is the order, secret first and
+        then the indices sorted.
+
+        One static QR of the uppercase string, which is section 4. The
+        descriptor export cycles eight mask patterns because a
+        coordinator's scanner choked on one of them at that density; a
+        48-character payload is a version 3 code and the profile asks for
+        a single frame, so this one holds still.
+        """
+        held = self.codex32
+        if not held or not held.get("secret"):
+            self.display.show(screens.codex32_unavailable(self.w, self.h))
+            self.buttons.read()
+            return
+        rows = screens.codex32_export_rows(held["shares"], held["derived"])
+        start = 0
+        while True:
+            choice = self._pick(
+                lambda sel, r=rows: screens.codex32_export_menu(
+                    self.w, self.h, r, sel), len(rows), start=start)
+            if choice is None:
+                return
+            start = choice
+            label = rows[choice][0]
+            payload = (held["secret"] if choice == 0
+                       else held["shares"][sorted(held["shares"])[choice - 1]])
+            derived = held["derived"] and choice == 0
+            if not self._confirm_codex32_qr(label, derived):
+                continue
+            code = qrchannel.text_to_image(
+                payload.upper(),
+                panel=(self.w, min(self.h, screens.QR_MAX_PX)))
+            self.display.show(screens.codex32_qr(
+                self.w, self.h, code, label, derived), sensitive=True)
+            self.buttons.read()
+
+    def _confirm_codex32_qr(self, label, derived):
+        """Name what is about to be on the panel, and default to BACK."""
+        sel = 0
+        while True:
+            self.display.show(screens.codex32_qr_warning(
+                self.w, self.h, label, derived, sel))
+            key = self.buttons.read()
+            if key in ("l", "r"):
+                sel = 1 - sel
+            elif key in ("a", "p"):
+                return sel == 1
+            elif key in ("b", "c"):
+                return False
 
     def _pick_split(self):
         selected = 0

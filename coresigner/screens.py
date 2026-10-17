@@ -1060,7 +1060,12 @@ TOOLS_OPTIONS = [("Check for leaks", ""),
                  # derives nothing, which is the standard's own argument
                  # for itself: integrity with zero re-exposure.
                  ("Verify a codex32 share", "BIP93"),
-                 ("Back up seed as codex32", "BIP93")]
+                 ("Back up seed as codex32", "BIP93"),
+                 # Codex32QR/v1-48 section 6. The row is always here and
+                 # the gate is inside it: a device that hides a row when
+                 # it has nothing to show reads as one that lost
+                 # something.
+                 ("Export codex32 QR", "Codex32QR/v1-48")]
 
 
 def leak_report(w, h, rows, cursor=0):
@@ -2234,6 +2239,90 @@ def codex32_error(w, h, detail="checksum failed at position 31"):
     return img
 
 
+
+
+# ---- Codex32QR/v1-48 section 6: exporting a share as a QR ---------------
+#
+# His profile defines export as well as import, and his own fork
+# implements it: Export as Codex32QR, a share chooser over the secret and
+# the entered shares, a gate on recoverability, and a warning that names
+# the share before the code appears. These are the screens for the same
+# flow. The payload is PLAIN TEXT, uppercase, one static QR, which is
+# section 4: no mask cycling here, unlike the descriptor export, because
+# the profile says single-frame and 48 characters at version 3 is nothing
+# like a descriptor's density.
+
+CODEX32_EXPORT_UNAVAILABLE = (
+    "No codex32 secret is loaded",
+    "Import one, or back a seed up as codex32,",
+    "and the export appears here.")
+
+
+def codex32_unavailable(w, h):
+    """Section 6.1: no recoverable S, so there is nothing to offer.
+
+    It says why rather than hiding the row, because a row that vanishes
+    reads as a device that has lost something.
+    """
+    img, d = _frame(w, h, "EXPORT  CODEX32")
+    for i, line in enumerate(CODEX32_EXPORT_UNAVAILABLE):
+        _fit(d, (w // 2, int(h * (0.33 + i * 0.11))), line,
+             int(h * 0.055 if i == 0 else h * 0.045),
+             OCHRE if i == 0 else GREY, "mm", int(w * 0.92))
+    _actions(d, w, h, ["BACK"], 0)
+    return img
+
+
+def codex32_export_rows(shares, derived):
+    """Section 6.3 ordering: the secret first, then the indices sorted.
+
+    `shares` are the index characters held. `derived` says the secret was
+    recovered from them rather than entered, which his section 6.2 calls
+    the source and his UX has to show.
+    """
+    first = ("Secret S", "derived" if derived else "entered", "normal")
+    return [first] + [(f"Share {i.upper()}", "entered", "normal")
+                      for i in sorted(shares)]
+
+
+def codex32_export_menu(w, h, rows, selected=0):
+    return _menu(w, h, "EXPORT  CODEX32", rows, selected)
+
+
+def codex32_qr_warning(w, h, label="Secret S", derived=False, selected=0):
+    """What is about to be on screen, named, before it is.
+
+    His section's own point, and ours: a share QR and a secret QR do not
+    carry the same consequence. The secret opens the wallet on its own.
+    A share does not, and it is still one of k that do.
+    """
+    secret = label.lower().startswith("secret")
+    img, d = _frame(w, h, "SHOW  AS  QR")
+    _fit(d, (w // 2, int(h * 0.26)), label.upper(), int(h * 0.09),
+         CREAM, "mm", int(w * 0.9), mono=True)
+    if derived and secret:
+        _fit(d, (w // 2, int(h * 0.38)), "Derived from the shares you entered",
+             int(h * 0.042), OCHRE, "mm", int(w * 0.92))
+    body = (["This opens the wallet on its own.",
+             "Anything that photographs the screen",
+             "has your key."] if secret else
+            ["This is one share of the set.",
+             "It opens nothing by itself, and it is",
+             "still secret material on a screen."])
+    _fit_block(d, body,
+               [(w // 2, int(h * (0.50 + i * 0.075))) for i in range(3)],
+               int(h * 0.045), GREY, "mm", int(w * 0.92))
+    _actions(d, w, h, ["BACK", "SHOW  IT"], selected)
+    return img
+
+
+def codex32_qr(w, h, code, label="Secret S", derived=False):
+    """The code, with what it is underneath. One static QR, section 4."""
+    img, d, below = _qr_card(w, h, code, reserve=int(h * 0.11))
+    line = label.upper() + ("  ·  DERIVED" if derived else "")
+    _fit(d, (w // 2, (below + h) // 2), line,
+         int(h * 0.045), CREAM, "mm", int(w * 0.94))
+    return img
 
 def codex32_replace(w, h, share_index="C", selected=0):
     """Two shares claim the same index and they are not the same string.

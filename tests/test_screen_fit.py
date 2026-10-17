@@ -301,6 +301,22 @@ CASES = {
         w, h, "Checksum failed at position 31"),
     "codex32-split": lambda w, h: screens.codex32_split_choice(w, h, 1),
     "codex32-replace": lambda w, h: screens.codex32_replace(w, h, "C", 1),
+    "codex32-unavailable": lambda w, h: screens.codex32_unavailable(w, h),
+    "codex32-export-menu": lambda w, h: screens.codex32_export_menu(
+        w, h, screens.codex32_export_rows({"a", "c", "d", "e", "f"}, True), 3),
+    "codex32-qr-warning-secret": lambda w, h: screens.codex32_qr_warning(
+        w, h, "Secret S", True, 1),
+    "codex32-qr-warning-share": lambda w, h: screens.codex32_qr_warning(
+        w, h, "Share C", False, 0),
+    # The worst case for the card is the longest payload the profile's
+    # validator takes, which is a 127-character 512-bit secret, not the
+    # 48-character share.
+    "codex32-qr": lambda w, h: screens.codex32_qr(
+        w, h, qrchannel.text_to_image(
+            "MS1" + "QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L" * 3
+            + "QPZRY9X8GF2TVDW0S3JN54KHC",
+            panel=(w, min(h, screens.QR_MAX_PX))),
+        "Secret S", True),
     "codex32-verified": lambda w, h: screens.codex32_verified(
         w, h, "share 2 of 3"),
     "busy": lambda w, h: screens.busy(w, h, "Bitcoin Core is generating your key…"),

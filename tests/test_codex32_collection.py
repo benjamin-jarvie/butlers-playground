@@ -74,9 +74,14 @@ class Script:
 DREW = []
 
 
-def _name_screens():
-    for name in ("codex32_shares", "text_entry", "codex32_error",
-                 "codex32_replace", "codex32_verified", "busy"):
+COLLECTION_SCREENS = ("codex32_shares", "text_entry", "codex32_error",
+                      "codex32_replace", "codex32_verified", "busy")
+EXPORT_SCREENS = ("codex32_unavailable", "codex32_export_menu",
+                  "codex32_qr_warning", "codex32_qr")
+
+
+def _name_screens(names=COLLECTION_SCREENS):
+    for name in names:
         real = getattr(screens, name)
 
         def made(n=name, f=real):
@@ -214,6 +219,81 @@ if coresigner_main.Session.MAX_SHARES == 5:
 else:
     bad(f"MAX_SHARES is {coresigner_main.Session.MAX_SHARES}, not the "
         "profile's 5")
+
+# ---- section 6: what an export may offer ------------------------------
+#
+# 6.1 gates export on a recoverable secret, 6.2 is the candidate set with
+# the secret's SOURCE carried, and 6.3 fixes the order: the secret first,
+# then the indices sorted. The warning in front of the code is ours and
+# his both: a share QR and a secret QR do not carry the same consequence.
+_name_screens(EXPORT_SCREENS)   # by the name that drew them
+
+
+class ExportHarness:
+    def __init__(self, keys, held):
+        self.sess = coresigner_main.Session(
+            Recorder(), Script(keys), rpc=None)
+        self.sess.codex32 = held
+
+    def run(self):
+        DREW.clear()
+        self.sess._tool_export_codex32()
+
+
+# 6.1: nothing held, so nothing offered, and it says why.
+h = ExportHarness(["a"], None)
+h.run()
+if DREW == ["codex32_unavailable"]:
+    ok("6.1: with no secret held, export offers nothing and says why")
+else:
+    bad(f"6.1: an ungated export drew {DREW}")
+
+# A 2-of-3 recovery leaves the candidate set behind, derived.
+rec = Harness(share_keys(SET_A[0]) + ["a"] + share_keys(SET_A[1]) + ["a"])
+rec.sess._codex32_open = coresigner_main.Session._codex32_open.__get__(
+    rec.sess)
+try:
+    rec.run()
+except Exception as exc:               # no bitcoind here; Core's step only
+    if "rpc" not in str(exc).lower() and not isinstance(exc, AttributeError):
+        raise
+held = rec.sess.codex32
+if held and held["derived"] and set(held["shares"]) == {
+        SET_A[0][8].lower(), SET_A[1][8].lower()}:
+    ok("6.2: a recovery keeps the derived secret and the entered shares")
+else:
+    bad(f"6.2: the candidate set after a recovery is {held}")
+
+# 6.3: the order, and the source on the secret's row.
+rows = screens.codex32_export_rows({"c", "a"}, derived=True)
+if [r[0] for r in rows] == ["Secret S", "Share A", "Share C"]:
+    ok("6.3: the secret comes first, then the indices sorted")
+else:
+    bad(f"6.3: the export order is {[r[0] for r in rows]}")
+if rows[0][1] == "derived" and screens.codex32_export_rows(
+        {"a"}, derived=False)[0][1] == "entered":
+    ok("6.2: the secret's row says whether it was derived or entered")
+else:
+    bad("6.2: the secret's source is not on its row")
+
+# The warning defaults to BACK, and BACK shows no code.
+full = {"secret": SECRET_A.lower(), "derived": False, "shares": {}}
+h = ExportHarness(["a", "a", "c"], full)   # pick, take default, leave
+h.run()
+if "codex32_qr" not in DREW and "codex32_qr_warning" in DREW:
+    ok("the warning defaults to BACK, so one press shows no code")
+else:
+    bad(f"a QR appeared on the default press: {DREW}")
+
+# And SHOW IT reaches it.
+h = ExportHarness(["a", "r", "a", "a", "c"], full)  # pick, move,
+#                   confirm, dismiss the code, leave the menu
+h.run()
+if "codex32_qr" in DREW:
+    ok("SHOW IT draws the code, after the warning")
+else:
+    bad(f"SHOW IT never reached the code: {DREW}")
+
 
 print(f"\n{len(fails)} failure(s)")
 sys.exit(1 if fails else 0)
