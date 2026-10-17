@@ -10,10 +10,14 @@ Palette follows the Core Signer/Kawanatanga artefact palette: ink ground, cream
 text, Te Peeke red for the one number that matters on each screen.
 """
 
+import sys
 from functools import lru_cache
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from codex32 import CHARSET as BECH32_CHARSET  # noqa: E402  (one source)
 
 INK = "#1A1714"
 CREAM = "#F5EFE0"
@@ -1551,8 +1555,17 @@ PASSPHRASE_CHARSET = "".join(chr(c) for c in range(32, 127))  # 95, with space
 #: that cannot appear in one.
 PATH_CHARSET = "0123456789h'/"
 
+#: codex32's alphabet is bech32's 32 characters, which fit one grid, so
+#: modes() gives it no mode button. It is typed on the SAME screen as a
+#: key: the forward merge of 2026-10-16 deleted the lab's own 4x8 grid,
+#: because two typing models on one device was the defect this repo's own
+#: UI audit named, and the second grid was the one where the centre press
+#: meant something of its own.
+CODEX32_CHARSET = BECH32_CHARSET
+
 CHARSETS = {"xprv": BASE58, "descriptor": DESCRIPTOR_CHARSET,
-            "path": PATH_CHARSET, "passphrase": PASSPHRASE_CHARSET}
+            "path": PATH_CHARSET, "passphrase": PASSPHRASE_CHARSET,
+            "codex32": CODEX32_CHARSET}
 
 #: MODES, not pages (map typing, T2). SeedSigner refuses to page a
 #: charset at all: its keyboard raises if one will not fit, and the
@@ -2095,11 +2108,6 @@ def verified(w, h, kind="ok", note=None):
 # so it says key; this build has them, so the words path says seed and
 # the codex32 path says share.
 
-import sys as _sys
-from pathlib import Path as _Path
-_sys.path.insert(0, str(_Path(__file__).resolve().parent))
-from codex32 import CHARSET as BECH32_CHARSET  # noqa: E402  (single source)
-
 ALPHABET = "abcdefghijklmnopqrstuvwxyz"
 
 
@@ -2134,8 +2142,9 @@ def seed_entry(w, h, word_index, total_words, prefix, candidates, grid_cur=0):
                                 radius=4, outline=OCHRE)
         d.text((gx, gy), ch.upper(), font=_font(int(h * 0.06)),
                fill=CREAM if i == grid_cur else GREY, anchor="mm")
-    d.text((w // 2, int(h * 0.955)), "center · pick word",
-           font=_font(int(h * 0.04)), fill=GREY, anchor="mm")
+    _fit(d, (w // 2, int(h * 0.955)),
+         "A types · the word takes itself", int(h * 0.04), GREY, "mm",
+         int(w * 0.92))
     return img
 
 
@@ -2185,42 +2194,6 @@ def codex32_scan(w, h):
     _actions(d, w, h, ["BACK", "TYPE INSTEAD"], 1)
     return img
 
-
-def codex32_entry(w, h, entered="MS12NAMEA320ZYXRPP", cursor=14, caret=None):
-    """bech32 charset as a 4x8 grid; d-pad moves, A writes at the caret.
-    The echo shows a window of the string around the caret (the character
-    being written or edited), highlighted, so a long share still shows the
-    part you are working on. No legend: the grid is the instruction."""
-    img, d = _frame(w, h, "TYPE  SHARE")
-    if caret is None:
-        caret = len(entered)
-    # A 16-char window that keeps the caret in view on a long share.
-    start = max(0, min(caret - 8, len(entered) - 16))
-    end = min(start + 16, len(entered))
-    size = int(h * 0.07)
-    xs = w // 2 - (end - start) * int(w * 0.028)
-    for i in range(start, end + 1):
-        ch = entered[i] if i < len(entered) else "_"
-        edit = i == caret
-        _fit(d, (xs, int(h * 0.17)), ch.upper(), size,
-             OCHRE if edit else CREAM, "mm", int(w * 0.06))
-        xs += int(w * 0.056)
-    d.text((w // 2, int(h * 0.255)),
-           f"{len(entered)} chars · pos {caret - 2}",
-           font=_font(int(h * 0.04)), fill=GREY, anchor="mm")
-    cell_w, cell_h = w // 9, int(h * 0.13)
-    x0, y0 = (w - 8 * cell_w) // 2, int(h * 0.34)
-    for i, ch in enumerate(BECH32_CHARSET):
-        r, c = divmod(i, 8)
-        cx = x0 + c * cell_w + cell_w // 2
-        cy = y0 + r * cell_h + cell_h // 2
-        if i == cursor:
-            d.rounded_rectangle([cx - cell_w // 2 + 2, cy - cell_h // 2 + 2,
-                         cx + cell_w // 2 - 2, cy + cell_h // 2 - 2],
-                        radius=4, outline=OCHRE)
-        d.text((cx, cy), ch.upper(), font=_font(int(h * 0.06)),
-               fill=CREAM if i == cursor else GREY, anchor="mm")
-    return img
 
 
 def codex32_shares(w, h, have_ids=("A", "C"), k=3):

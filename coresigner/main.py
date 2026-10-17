@@ -1654,51 +1654,31 @@ class Session:
             self.buttons.read()
         return self._codex32_open(shares)
 
-    def _codex32_entry_one(self, prefill=None):
-        """Grid entry with an editable caret.
+    #: Every codex32 string starts here, and the grid never lets the
+    #: caret into it. 'ms' is BIP93's human-readable part and '1' is
+    #: bech32's separator, so there is nothing for a person to type and
+    #: three characters of a share they cannot get wrong.
+    CODEX32_PREFIX = "ms1"
 
-        U/D move the grid row, L/R move the CARET along the typed string
-        (the character shown in gold). A writes the grid letter at the caret
-        and advances, so fresh typing at the end appends and a caret parked
-        mid-string overwrites one character in place. B deletes at the caret,
-        C finishes (empty = abort). `prefill` re-opens a rejected share so
-        only the wrong character is fixed, not all of it retyped. The 'ms1'
-        prefix is fixed and the caret never enters it.
+    def _codex32_entry_one(self, prefill=None):
+        """One codex32 string, typed on the device's own text grid.
+
+        It used to be a 4x8 grid of its own where the centre press walked
+        an edit caret. That gave the centre press a second meaning, and
+        the rule is that it has one: SELECT, on every screen (Ben, on the
+        board, 2026-09-18, after reaching for it twice and losing what he
+        had typed). The shared grid carries the caret as two cells on the
+        grid itself, which is how the key screen already does it.
+
+        `prefill` reopens a rejected share so one character is fixed
+        rather than all of it retyped.
         """
-        entered = prefill if prefill else "ms1"
-        caret, cursor = len(entered), 0
-        while True:
-            self.display.show(screens.codex32_entry(
-                self.w, self.h, entered, cursor, caret), sensitive=True)
-            key = self.buttons.read()
-            if key == "u":
-                cursor = (cursor - 8) % 32
-            elif key == "d":
-                cursor = (cursor + 8) % 32
-            elif key == "l":
-                cursor = (cursor - 1) % 32
-            elif key == "r":
-                cursor = (cursor + 1) % 32
-            elif key == "p":
-                # Center-press walks the edit caret left, wrapping past the
-                # start back to the append slot: reach any character to fix
-                # it with the grid, using one key.
-                caret = len(entered) if caret <= 3 else caret - 1
-            elif key == "a":
-                ch = screens.BECH32_CHARSET[cursor]
-                if caret == len(entered):
-                    entered += ch
-                else:
-                    entered = entered[:caret] + ch + entered[caret + 1:]
-                caret += 1
-            elif key == "b":
-                if caret < len(entered):
-                    entered = entered[:caret] + entered[caret + 1:]
-                elif len(entered) > 3:
-                    entered = entered[:-1]
-                    caret = len(entered)
-            elif key == "c":
-                return entered if len(entered) > 3 else None
+        typed = self._text_entry("TYPE  SHARE", "codex32",
+                                 start=prefill or self.CODEX32_PREFIX)
+        if typed is None:
+            return None
+        typed = typed.strip().lower()
+        return typed if len(typed) > len(self.CODEX32_PREFIX) else None
 
     def _tool_verify(self):
         """The zero-re-exposure check: checksum only, nothing derived.
@@ -1805,18 +1785,32 @@ class Session:
                     gi = (gi - 1) % 32
                 elif key == "r":
                     gi = (gi + 1) % 32
-                elif key == "a":
+                elif key in ("a", "p"):
+                    # BOTH type. The centre press used to take the top
+                    # candidate, which is the second meaning the rule
+                    # forbids, so the word now takes ITSELF: BIP39 words
+                    # are unique in their first four letters, and most
+                    # are unique sooner, so the moment one candidate is
+                    # left there is nothing further to choose.
+                    #
+                    # It is not a trade. The old loop stopped when the
+                    # word merely HEADED the list and spent a press
+                    # taking it; this one types until the list is one
+                    # long and spends nothing. Measured over the same 24
+                    # words: 348 presses against 352
+                    # (tests/test_ui_cost.py).
                     if gi < 26:
                         prefix += screens.ALPHABET[gi]
+                        if len([w for w in self.wordlist
+                                if w.startswith(prefix)]) == 1:
+                            words.append(next(w for w in self.wordlist
+                                              if w.startswith(prefix)))
+                            break
                 elif key == "b":
                     if prefix:
                         prefix = prefix[:-1]
                     elif words:
                         words.pop()           # undo the previous word
-                        break
-                elif key == "p":
-                    if candidates:            # center-press: take the top word
-                        words.append(candidates[0])
                         break
                 elif key == "c":
                     return None

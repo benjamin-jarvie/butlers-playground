@@ -373,14 +373,13 @@ def word_presses(word):
     """Replays Session._collect_words as it is TODAY: an 8x4 letter grid.
 
     Per letter: u/d moves a row (wrapping mod 32), l/r moves a column, A
-    types it. The word is taken with the centre press once it heads the
-    candidate list.
+    types it. THE WORD TAKES ITSELF the moment one candidate is left
+    (2026-10-16): the centre press used to take the top candidate, and
+    that was a second meaning for the one button the rule reserves for
+    select, so the press went and the word commits on its own.
     """
     prefix, total, cur = "", 0, 0
     while True:
-        cands = [w for w in WORDLIST if w.startswith(prefix)][:3]
-        if cands and cands[0] == word:
-            return total + 1          # centre press takes the top candidate
         nxt = word[len(prefix)]
         t = screens.ALPHABET.index(nxt)
         rows = (t // 8 - cur // 8) % 4
@@ -388,6 +387,8 @@ def word_presses(word):
         total += min(rows, 4 - rows) + min(cols, 8 - cols) + 1
         cur = t
         prefix += nxt
+        if len([w for w in WORDLIST if w.startswith(prefix)]) == 1:
+            return total
 
 
 

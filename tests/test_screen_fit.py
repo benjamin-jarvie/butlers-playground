@@ -290,8 +290,11 @@ CASES = {
     "seed-length": lambda w, h: screens.seed_length(w, h),
     "passphrase-prompt": lambda w, h: screens.passphrase_prompt(w, h, 1),
     "codex32-scan": lambda w, h: screens.codex32_scan(w, h),
-    "codex32-entry": lambda w, h: screens.codex32_entry(
-        w, h, "MS12NAMEA320ZYXRPP", 14, 16),
+    # A share is typed on the SAME grid as a key now, so the case that
+    # covers it is the text-entry one above, with the codex32 charset.
+    "codex32-typed": lambda w, h: screens.text_entry(
+        w, h, "TYPE  SHARE", "ms12l0veaarwenfluffy", 7, "codex32", 0,
+        caret=20),
     "codex32-shares": lambda w, h: screens.codex32_shares(
         w, h, ("A", "C"), 3),
     "codex32-error": lambda w, h: screens.codex32_error(

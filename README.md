@@ -492,7 +492,7 @@ The wordlist is held to the same rule. It is pinned to the canonical
 BIP39 sha256, and the shim REFUSES a wordlist that is not that one, which
 the suite proves by importing a tampered copy and checking it raises.
 
-**Layer 2 sees secrets, computes nothing with them. 3315 lines.**
+**Layer 2 sees secrets, computes nothing with them. 3264 lines.**
 [`main.py`](coresigner/main.py), [`signer.py`](coresigner/signer.py),
 [`screens.py`](coresigner/screens.py), [`qrsource.py`](coresigner/qrsource.py).
 
@@ -540,8 +540,8 @@ Core an opaque string, and the one exception is documented at the top of
 payload, which is bounded by a length cap and a charset check before any
 container code runs.
 
-**Total functional code: 3,937 lines** (8,258 with blanks/comments).
-**Test code: 9,461 lines**, none of which ships.
+**Total functional code: 3,886 lines** (8,225 with blanks/comments).
+**Test code: 9,465 lines**, none of which ships.
 **Vendored, not ours: 1,868 lines** in [`hw/vendor/`](hw/vendor/): the
 BC-UR animated-QR codec, which is Blockchain Commons' by way of
 SeedSigner and is unmodified, and SeedSigner's ST7789 display driver,

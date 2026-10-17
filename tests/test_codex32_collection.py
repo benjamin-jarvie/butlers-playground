@@ -74,7 +74,7 @@ DREW = []
 
 
 def _name_screens():
-    for name in ("codex32_shares", "codex32_entry", "codex32_error",
+    for name in ("codex32_shares", "text_entry", "codex32_error",
                  "codex32_replace", "codex32_verified", "busy"):
         real = getattr(screens, name)
 
@@ -88,25 +88,28 @@ def _name_screens():
 
 _name_screens()
 
-# The grid: 32 bech32 cells, u/d move eight, l/r move one, A types at the
-# cursor, C finishes. Derived from the charset rather than counted by
-# hand, which is TESTING.md rule 11.
+# A share is typed on the device's own text grid since 2026-10-16, so the
+# presses come from the helper that already replays that grid's rules
+# rather than from a second model of them (TESTING.md rule 11).
+sys.path.insert(0, str(ROOT / "tests"))
+from e2e_keys import text_keys       # noqa: E402
+
+
 def share_keys(share):
-    """Presses that type one codex32 string on the 4x8 grid.
+    """Presses that type one codex32 string and commit it.
 
     The 'ms1' prefix is prefilled by the entry loop, so only what follows
-    is typed.
+    is typed, and the walk down to DONE is the grid's own.
     """
-    keys, cur = [], 0
-    for ch in share.lower()[3:]:
-        target = codex32.CHARSET.index(ch)
-        # RIGHT only. The grid's l/r step one cell across all 32 and wrap,
-        # they do not stop at the end of a row, so "right by eight" is the
-        # row below rather than the same column. Walking right is the one
-        # model that cannot disagree with the loop.
-        keys += ["r"] * ((target - cur) % 32) + ["a"]
-        cur = target
-    return keys + ["c"]
+    return list(text_keys("codex32", share.lower()[3:]))
+
+
+def abort_keys():
+    """Presses that leave the grid without typing. C is the MODE button
+    on this device, not a way out, so the way out is the action bar:
+    down off the grid, left to CANCEL, select."""
+    from e2e_keys import commit_presses
+    return list(commit_presses("codex32", 0, 0)[:-1]) + ["l", "a"]
 
 
 class Harness:
@@ -186,7 +189,7 @@ if same_index.lower() == SET_A[0].lower():
     bad("the clash vector is the same string; 5.2.5 cannot be tested")
 else:
     h = Harness(share_keys(SET_A[0]) + ["a"] + share_keys(same_index)
-                + ["a"] + ["c"])
+                + ["a"] + abort_keys())
     h.run()
     if "codex32_replace" in DREW:
         ok("the same index with a different payload asks before replacing")

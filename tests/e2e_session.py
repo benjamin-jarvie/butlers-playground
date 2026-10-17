@@ -15,27 +15,37 @@ sys.path.insert(0, str(ROOT / "coresigner"))
 sys.path.insert(0, str(ROOT / "shim"))
 import signer  # noqa: E402
 import qrchannel  # noqa: E402
-from bip39_shim import mnemonic_to_xprv  # noqa: E402
+from bip39_shim import load_wordlist, mnemonic_to_xprv  # noqa: E402
 
 MNEMONIC = "abandon " * 11 + "about"
 # The same key, as an xprv. `pure`'s sessions take this form and this
 # repository derives it from the words rather than pasting a second
 # constant that could drift out of step with them.
 XPRV = mnemonic_to_xprv(MNEMONIC, mainnet=False)
-# Button script for typing the canonical mnemonic (see main._seed_words):
-# abandon: append 'a', open candidates, accept first  -> "ara"
-# about:   'a', +1 to 'b', append, +14 to 'o', append, candidates, accept
+# Button script for typing one BIP39 word (see main._collect_words). The
+# word COMMITS ITSELF when one candidate is left, so there is no press
+# that takes it: the script types letters until the list is one long and
+# the loop moves to the next word on its own (2026-10-16).
+WORDLIST_FOR_SCRIPT = load_wordlist()
+
+
 def word_keys(word):
-    """Type a BIP39 word on the 8x4 letter grid (a=0..z=25, wrap %32) and
-    center-press to take the top candidate. Four letters uniquely identify
-    any BIP39 word, so the top candidate is the word."""
-    cur, out = 0, []
-    for ch in word[:4]:
+    """Type a BIP39 word on the 8x4 letter grid (a=0..z=25, wrap %32).
+
+    Derived from the wordlist rather than fixed at four letters, because
+    the loop stops at the first UNIQUE prefix and most words reach one
+    sooner than that.
+    """
+    cur, out, prefix = 0, [], ""
+    for ch in word:
         tgt = ord(ch) - 97
         d = (tgt - cur) % 32
         out.append("d" * (d // 8) + "r" * (d % 8) + "a")
         cur = tgt
-    out.append("p")
+        prefix += ch
+        if len([w for w in WORDLIST_FOR_SCRIPT
+                if w.startswith(prefix)]) == 1:
+            break
     return "".join(out)
 
 
